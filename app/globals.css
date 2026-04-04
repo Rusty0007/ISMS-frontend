@@ -18,10 +18,65 @@ body {
   color: var(--foreground);
   background: var(--background);
   font-family: Arial, Helvetica, sans-serif;
+  cursor: default;
+  user-select: none;
+}
+
+/* Restore text interaction for actual input elements */
+input, textarea, [contenteditable] {
+  cursor: text;
+  user-select: text;
+}
+
+/* Restore pointer for interactive elements */
+a, button, [role="button"] {
+  cursor: pointer;
 }
 
 @layer utilities {
   .text-balance {
     text-wrap: balance;
   }
+
+  .animate-in {
+    animation-duration: 500ms;
+    animation-fill-mode: both;
+  }
+  .fade-in {
+    animation-name: fadeIn;
+  }
+  .slide-in-from-bottom-4 {
+    animation-name: slideInFromBottom4;
+  }
+  .slide-in-from-top-2 {
+    animation-name: slideInFromTop2;
+  }
+  .zoom-in-95 {
+    animation-name: zoomIn95;
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInFromBottom4 {
+  from { transform: translateY(1rem); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes slideInFromTop2 {
+  from { transform: translateY(-0.5rem); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes zoomIn95 {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }

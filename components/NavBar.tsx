@@ -404,6 +404,19 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
         }
     }
 
+    function handleLogoClick() {
+        setDropdownOpen(false);
+        setMobileMenuOpen(false);
+
+        if (pathname === "/dashboard") {
+            window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+            window.location.assign("/dashboard");
+            return;
+        }
+
+        router.push("/dashboard");
+    }
+
     /** Icon emoji for a notification type. */
     function notifIcon(type: string): string {
         if (type.startsWith("tournament"))   return "🏆";
@@ -638,9 +651,14 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
         <>
             <nav className="relative z-30 border-b border-white/[0.08] bg-zinc-950/40 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] px-4 sm:px-6 py-4 flex items-center justify-between">
                 <div className="flex items-center gap-3 shrink-0">
-                    <Link href="/dashboard">
+                    <button
+                        type="button"
+                        onClick={handleLogoClick}
+                        aria-label="Go to dashboard"
+                        className="transition-transform active:scale-95"
+                    >
                         <Image src="/logo.png" alt="iSMS" width={120} height={40} priority className="h-10 w-auto" />
-                    </Link>
+                    </button>
                     {username && (
                         <span className="hidden sm:block text-xs text-zinc-400 border-l border-zinc-700 pl-3">
                             {username}

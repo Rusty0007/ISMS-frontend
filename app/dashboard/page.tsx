@@ -299,10 +299,10 @@ export default function DashboardPage() {
                 </div>
             )}
 
-            <main className="relative z-10 max-w-7xl mx-auto px-6 py-10 flex flex-col gap-10">
+            <main className="relative z-10 max-w-7xl mx-auto px-6 py-10 pb-32 flex flex-col gap-10">
 
                 {/* Welcome header */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-8">
                     <div className="flex items-center gap-5">
                         <UserAvatar
                             first_name={profile?.first_name}
@@ -311,27 +311,27 @@ export default function DashboardPage() {
                             avatar_url={profile?.avatar_url}
                             size="lg"
                         />
-                        <div>
-                            <h1 className="text-4xl font-black tracking-tight leading-none">
+                        <div className="min-w-0">
+                            <h1 className="text-3xl sm:text-4xl font-black tracking-tight leading-tight truncate">
                                 Welcome, <span className="bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">{profile?.first_name || profile?.username}</span>
                             </h1>
                             <div className="flex items-center gap-2 mt-2">
-                                <span className="text-zinc-500 text-sm font-medium">@{profile?.username}</span>
-                                <span className="w-1 h-1 bg-zinc-700 rounded-full" />
-                                <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">Player</span>
+                                <span className="text-zinc-500 text-sm font-medium truncate">@{profile?.username}</span>
+                                <span className="w-1 h-1 bg-zinc-700 rounded-full shrink-0" />
+                                <span className="bg-blue-500/10 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider shrink-0">Player</span>
                             </div>
                         </div>
                     </div>
-                    <div className="flex items-center gap-3">
+                    <div className="grid grid-cols-2 lg:flex lg:items-center gap-3">
                         <Link
                             href="/matches/queue"
-                            className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-white text-black hover:bg-zinc-200 font-bold px-6 py-3.5 rounded-2xl transition-all shadow-xl active:scale-[0.98]"
+                            className="flex items-center justify-center gap-2 bg-white text-black hover:bg-zinc-200 font-black px-6 py-4 rounded-2xl transition-all shadow-xl active:scale-[0.98] text-sm"
                         >
                             ⚡ Play Now
                         </Link>
                         <Link
                             href="/matches/new"
-                            className="flex items-center justify-center bg-zinc-900 border border-white/10 hover:border-white/20 text-white font-bold px-6 py-3.5 rounded-2xl transition-all active:scale-[0.98]"
+                            className="flex items-center justify-center bg-zinc-900 border border-white/10 hover:border-white/20 text-white font-black px-6 py-4 rounded-2xl transition-all active:scale-[0.98] text-sm"
                         >
                             🤝 Friendly
                         </Link>
@@ -378,7 +378,7 @@ export default function DashboardPage() {
                         <span className="w-8 h-px bg-zinc-800" />
                         Quick Access
                     </h2>
-                    <div className="grid grid-cols-4 sm:grid-cols-8 gap-3">
+                    <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-8 gap-3 sm:gap-4">
                         {[
                             { href: "/matches",      icon: "📋", label: "Matches",     badge: pendingMatchCount,   badgeColor: "bg-orange-500 text-white" },
                             { href: "/clubs",        icon: "🏢", label: "Clubs",       badge: pendingClubRequests, badgeColor: "bg-violet-500 text-white" },
@@ -392,15 +392,15 @@ export default function DashboardPage() {
                             <Link
                                 key={item.href}
                                 href={item.href}
-                                className="relative flex flex-col items-center gap-2 bg-zinc-900/50 hover:bg-zinc-800/60 border border-white/5 hover:border-white/10 rounded-2xl py-4 px-2 transition-all group active:scale-95"
+                                className="relative flex flex-col items-center gap-2 bg-zinc-900/50 hover:bg-zinc-800/60 border border-white/5 hover:border-white/10 rounded-2xl py-5 sm:py-4 px-2 transition-all group active:scale-95"
                             >
                                 {item.badge > 0 && (
-                                    <span className={`absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 ${item.badgeColor} text-[10px] font-black rounded-full flex items-center justify-center leading-none z-10`}>
+                                    <span className={`absolute -top-1.5 -right-1.5 min-w-[20px] h-[20px] px-1 ${item.badgeColor} text-[10px] font-black rounded-full flex items-center justify-center shadow-lg shadow-black/50 leading-none z-10`}>
                                         {item.badge > 99 ? "99+" : item.badge}
                                     </span>
                                 )}
-                                <span className="text-2xl group-hover:scale-110 transition-transform">{item.icon}</span>
-                                <span className="text-[10px] font-bold text-zinc-500 group-hover:text-zinc-300 transition-colors tracking-wide leading-none text-center">{item.label}</span>
+                                <span className="text-3xl sm:text-2xl group-hover:scale-110 transition-transform">{item.icon}</span>
+                                <span className="text-[10px] sm:text-[11px] font-black text-zinc-500 group-hover:text-zinc-300 transition-colors tracking-widest leading-none text-center uppercase">{item.label}</span>
                             </Link>
                         ))}
                     </div>
@@ -482,7 +482,7 @@ export default function DashboardPage() {
                                                                 <p className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Best: {bestRating}</p>
                                                             </div>
                                                         </div>
-                                                        <Link href={`/matches/queue?sport=${sport}`} className="bg-white/5 hover:bg-white/10 text-white text-[10px] font-black px-4 py-2 rounded-xl transition-all active:scale-95">
+                                                        <Link href={`/matches/queue?sport=${sport}`} className="bg-white/5 hover:bg-white/10 text-white text-[10px] sm:text-[11px] font-black px-5 py-2.5 sm:px-4 sm:py-2 rounded-xl transition-all active:scale-95 border border-white/5">
                                                             QUEUE →
                                                         </Link>
                                                     </div>

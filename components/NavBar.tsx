@@ -36,6 +36,7 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
     const [notifications,  setNotifications]  = useState<Notification[]>([]);
     const [unreadCount,    setUnreadCount]     = useState(0);
     const [dropdownOpen,   setDropdownOpen]    = useState(false);
+    const [mobileMenuOpen, setMobileMenuOpen]  = useState(false);
     const [respondingId,   setRespondingId]    = useState<string | null>(null);
     const [toasts,         setToasts]          = useState<ToastItem[]>([]);
 
@@ -44,6 +45,7 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
     const [partyStatus,    setPartyStatus]    = useState<string | null>(null); // "forming"|"ready"|"in_queue"
 
     const dropdownRef       = useRef<HTMLDivElement>(null);
+    const mobileMenuRef     = useRef<HTMLDivElement>(null);
     const pollRef           = useRef<ReturnType<typeof setInterval> | null>(null);
     const toastedIdsRef     = useRef(new Set<string>());
     const notifInitializedRef = useRef(false);
@@ -376,6 +378,9 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
             if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
                 setDropdownOpen(false);
             }
+            if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
+                setMobileMenuOpen(false);
+            }
         }
         document.addEventListener("mousedown", handleClick);
         return () => document.removeEventListener("mousedown", handleClick);
@@ -644,7 +649,7 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                     {isAdmin && (
                         <Link
                             href="/admin"
-                            className="hidden sm:inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg transition-all"
+                            className="hidden lg:inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-lg transition-all"
                             style={{
                                 background: "rgba(239,68,68,0.12)",
                                 border: "1px solid rgba(239,68,68,0.25)",
@@ -669,7 +674,7 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                 {partyStatus && (
                     <button
                         onClick={() => router.push("/matches/party")}
-                        className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all"
+                        className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all mr-2"
                         style={{
                             background: partyStatus === "in_queue"
                                 ? "rgba(139,92,246,0.18)"
@@ -811,15 +816,123 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                     </div>
 
                     {backHref && backLabel && (
-                        <Link href={backHref} className="text-sm text-zinc-400 hover:text-white transition-colors">
+                        <Link href={backHref} className="hidden sm:block text-sm text-zinc-400 hover:text-white transition-colors">
                             {backLabel}
                         </Link>
                     )}
+
+                    {/* Mobile Menu Button */}
+                    <div className="md:hidden relative" ref={mobileMenuRef}>
+                        <button
+                            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                            className="p-1 text-zinc-400 hover:text-white transition-colors"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-6 h-6">
+                                <path strokeLinecap="round" strokeLinejoin="round" d={mobileMenuOpen ? "M6 18L18 6M6 6l12 12" : "M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"} />
+                            </svg>
+                        </button>
+
+                        {mobileMenuOpen && (
+                            <div className="absolute right-0 top-full mt-2 w-64 bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-50">
+                                <div className="flex flex-col p-2">
+                                    <Link href="/dashboard" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/dashboard" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">🏠</span>
+                                        <span className="text-sm font-bold">Dashboard</span>
+                                    </Link>
+                                    <Link href="/matches" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/matches" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">🎾</span>
+                                        <span className="text-sm font-bold">Matches</span>
+                                    </Link>
+                                    <Link href="/clubs" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/clubs" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">🏢</span>
+                                        <span className="text-sm font-bold">Clubs</span>
+                                    </Link>
+                                    <Link href="/tournaments" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/tournaments" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">🏆</span>
+                                        <span className="text-sm font-bold">Tournaments</span>
+                                    </Link>
+                                    <Link href="/leaderboard" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/leaderboard" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">📊</span>
+                                        <span className="text-sm font-bold">Leaderboard</span>
+                                    </Link>
+                                    <Link href="/friends" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/friends" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">👥</span>
+                                        <span className="text-sm font-bold">Friends</span>
+                                    </Link>
+                                    <Link href="/referee" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/referee" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">🟡</span>
+                                        <span className="text-sm font-bold">Referee</span>
+                                    </Link>
+                                    <div className="h-px bg-white/5 my-2" />
+                                    <Link href="/profile" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/profile" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">👤</span>
+                                        <span className="text-sm font-bold">My Profile</span>
+                                    </Link>
+                                    <button 
+                                        onClick={() => {
+                                            setMobileMenuOpen(false);
+                                            // Handle logout - we need to pass this or handle it here. 
+                                            // Since NavBar is a client component, we can probably import it.
+                                            import("@/lib/auth").then(({ clearAuthSession }) => {
+                                                clearAuthSession();
+                                                window.location.href = "/login";
+                                            });
+                                        }} 
+                                        className="flex items-center gap-3 px-4 py-3 rounded-xl text-red-400 hover:bg-red-500/10 transition-colors"
+                                    >
+                                        <span className="text-lg">🚪</span>
+                                        <span className="text-sm font-bold">Logout</span>
+                                    </button>
+                                    {isAdmin && (
+                                        <>
+                                            <div className="h-px bg-white/5 my-2" />
+                                            <Link href="/admin" onClick={() => setMobileMenuOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-xl text-red-400 hover:bg-red-500/10 transition-colors">
+                                                <span className="text-lg">🛡️</span>
+                                                <span className="text-sm font-bold">Admin Console</span>
+                                            </Link>
+                                        </>
+                                    )}
+                                    {backHref && backLabel && (
+                                        <Link href={backHref} onClick={() => setMobileMenuOpen(false)} className="flex items-center gap-3 px-4 py-3 rounded-xl text-zinc-400 hover:bg-white/5 transition-colors">
+                                            <span className="text-lg">⬅️</span>
+                                            <span className="text-sm font-bold">{backLabel}</span>
+                                        </Link>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </nav>
 
             {/* ── Queue status banner ── */}
             <QueueBanner />
+
+            {/* ── Bottom Navigation Bar (Mobile Only) ── */}
+            <div className="md:hidden fixed bottom-0 left-0 right-0 z-[100] bg-zinc-950/80 backdrop-blur-xl border-t border-white/10 px-6 py-3 pb-safe">
+                <div className="flex items-center justify-between max-w-lg mx-auto">
+                    <Link href="/dashboard" className={`flex flex-col items-center gap-1 ${pathname === "/dashboard" ? "text-blue-400" : "text-zinc-500"}`}>
+                        <span className="text-xl">🏠</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest">Home</span>
+                    </Link>
+                    <Link href="/matches" className={`flex flex-col items-center gap-1 ${pathname === "/matches" ? "text-blue-400" : "text-zinc-500"}`}>
+                        <span className="text-xl">🎾</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest">Play</span>
+                    </Link>
+                    <Link href="/clubs" className={`flex flex-col items-center gap-1 ${pathname === "/clubs" ? "text-blue-400" : "text-zinc-500"}`}>
+                        <span className="text-xl">🏢</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest">Clubs</span>
+                    </Link>
+                    <Link href="/tournaments" className={`flex flex-col items-center gap-1 ${pathname === "/tournaments" ? "text-blue-400" : "text-zinc-500"}`}>
+                        <span className="text-xl">🏆</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest">Events</span>
+                    </Link>
+                    <Link href="/profile" className={`flex flex-col items-center gap-1 ${pathname === "/profile" ? "text-blue-400" : "text-zinc-500"}`}>
+                        <span className="text-xl">👤</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest">Me</span>
+                    </Link>
+                </div>
+            </div>
 
             {/* ── Toast notifications ── */}
             <div className="fixed top-4 left-4 right-4 sm:left-auto sm:right-4 sm:w-80 z-[200] flex flex-col gap-2 pointer-events-none">

@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 
@@ -41,6 +44,8 @@ const sports = [
 ];
 
 export default function Home() {
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
   return (
     <div className="min-h-screen bg-[#030711] text-zinc-100 font-sans selection:bg-blue-500/30 overflow-x-hidden">
       
@@ -56,22 +61,37 @@ export default function Home() {
       </div>
 
       {/* Navbar */}
-      <nav className="fixed top-0 z-50 w-full px-6 py-4 flex items-center justify-between border-b border-white/[0.05] bg-[#030711]/80 backdrop-blur-md">
-        <Link href="/" className="transition-transform active:scale-95">
-          <Image src="/logo.png" alt="iSMS" width={110} height={35} className="h-8 w-auto" />
-        </Link>
-        <div className="hidden md:flex items-center gap-6 text-[13px] font-medium text-zinc-400">
-          <Link href="#features"  className="hover:text-white transition-colors">Features</Link>
-          <Link href="#sports"    className="hover:text-white transition-colors">Sports</Link>
-          <Link href="/leaderboard" className="hover:text-white transition-colors">Leaderboard</Link>
-          <Link href="/about"      className="hover:text-white transition-colors">About</Link>
-          <Link href="/developer"  className="hover:text-white transition-colors">Developer</Link>
-        </div>
-        <div className="flex items-center gap-4">
-          <Link href="/login" className="text-sm text-zinc-400 hover:text-white transition-colors">Log in</Link>
-          <Link href="/register" className="px-4 py-1.5 text-sm font-bold rounded-lg bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.3)] transition-all active:scale-95">
-            Join
+      <nav className="fixed top-0 z-50 w-full border-b border-white/[0.05] bg-[#030711]/80 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <Link href="/" className="transition-transform active:scale-95 shrink-0">
+            <Image src="/logo.png" alt="iSMS" width={110} height={35} className="h-8 w-auto" />
           </Link>
+          
+          <div className="hidden md:flex items-center gap-6 text-[13px] font-medium text-zinc-400">
+            <Link href="#features"  className="hover:text-white transition-colors">Features</Link>
+            <Link href="#sports"    className="hover:text-white transition-colors">Sports</Link>
+            <Link href="/leaderboard" className="hover:text-white transition-colors">Leaderboard</Link>
+            <Link href="/about"      className="hover:text-white transition-colors">About</Link>
+            <Link href="/developer"  className="hover:text-white transition-colors">Developer</Link>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              <Link href="/login" className="text-xs sm:text-sm text-zinc-400 hover:text-white transition-colors px-2">Log in</Link>
+              <Link href="/register" className="px-4 py-1.5 text-xs sm:text-sm font-bold rounded-lg bg-blue-600 hover:bg-blue-500 text-white shadow-[0_0_15px_rgba(37,99,235,0.3)] transition-all active:scale-95">
+                Join
+              </Link>
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile Sub-nav (Always visible scrollable tabs) */}
+        <div className="md:hidden border-t border-white/[0.03] px-6 py-2 overflow-x-auto no-scrollbar flex items-center gap-6">
+          <Link href="#features" className="whitespace-nowrap text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-colors">Features</Link>
+          <Link href="#sports" className="whitespace-nowrap text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-colors">Sports</Link>
+          <Link href="/leaderboard" className="whitespace-nowrap text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-colors">Rankings</Link>
+          <Link href="/about" className="whitespace-nowrap text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-colors">About</Link>
+          <Link href="/developer" className="whitespace-nowrap text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-colors">Developer</Link>
         </div>
       </nav>
 

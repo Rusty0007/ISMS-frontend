@@ -19,7 +19,10 @@ interface LobbyState {
     sport:        string;
     match_format: string;
     players:      LobbyPlayer[];
+    entered_count: number;
+    total_players: number;
     all_entered:  boolean;
+    return_route: string;
 }
 
 const SPORT_EMOJI: Record<string, string> = {
@@ -41,8 +44,10 @@ export default function MatchLobbyPage() {
     const [loading,  setLoading]  = useState(true);
     const [entered,  setEntered]  = useState(false);
     const [entering,   setEntering]   = useState(false);
+    const [refreshing, setRefreshing] = useState(false);
     const [cancelling, setCancelling] = useState(false);
     const [confirmCancel, setConfirmCancel] = useState(false);
+    const [connectionError, setConnectionError] = useState<string | null>(null);
     const [secs,     setSecs]     = useState(LOBBY_TIMEOUT);
     const [timedOut, setTimedOut] = useState(false);
 
@@ -51,10 +56,15 @@ export default function MatchLobbyPage() {
     const pollRef  = useRef<ReturnType<typeof setInterval> | null>(null);
     const aliveRef = useRef(true);
     const enteringRef = useRef(false);
+    const timeoutHandledRef = useRef(false);
+    const returnRouteRef = useRef("/matches/queue");
 
     // Stable ref so effects don't re-run when router identity changes
     const routerRef = useRef(router);
     useEffect(() => { routerRef.current = router; }, [router]);
+    useEffect(() => {
+        if (lobby?.return_route) returnRouteRef.current = lobby.return_route;
+    }, [lobby?.return_route]);
 
     // fetchLobby stored in a ref so its identity never changes — avoids effect re-runs
     const fetchLobbyRef = useRef<() => Promise<void>>(async () => {});
@@ -69,13 +79,14 @@ export default function MatchLobbyPage() {
             if (isUnauthorized(res.status)) { clearAuthSession(); routerRef.current.push("/login"); return; }
             if (!res.ok) return;
             const data: LobbyState = await res.json();
+            if (data.return_route) returnRouteRef.current = data.return_route;
             setLobby(data);
             if (data.match_status === "ongoing") {
                 routerRef.current.push(`/matches/${matchId}`);
                 return;
             }
             if (data.match_status === "cancelled" || data.match_status === "invalidated") {
-                routerRef.current.push("/matches/queue");
+                routerRef.current.push(data.return_route ?? returnRouteRef.current);
                 return;
             }
         } catch {}
@@ -94,6 +105,7 @@ export default function MatchLobbyPage() {
             if (!res.ok) return false;
 
             setEntered(true);
+            setConnectionError(null);
             const d = await res.json();
             if (d.status === "match_started") {
                 routerRef.current.push(`/matches/${matchId}`);
@@ -106,6 +118,40 @@ export default function MatchLobbyPage() {
         } finally {
             enteringRef.current = false;
             setEntering(false);
+        }
+    }, [matchId]);
+
+    const handleReconnect = useCallback(async () => {
+        setConnectionError(null);
+        setRefreshing(true);
+        try {
+            await fetchLobbyRef.current();
+            const enteredLobby = await attemptEnterLobby();
+            if (!enteredLobby) {
+                setConnectionError("Still syncing your connection. Keep this page open and tap Reconnect again if needed.");
+            }
+        } catch {
+            setConnectionError("Reconnect failed. Please try again.");
+        } finally {
+            setRefreshing(false);
+        }
+    }, [attemptEnterLobby]);
+
+    const handleAbandonMatch = useCallback(async () => {
+        const token = getAccessToken();
+        if (!token) return;
+        setConnectionError(null);
+        setCancelling(true);
+        try {
+            await fetch(`/api/matches/${matchId}/lobby/cancel`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            routerRef.current.push(returnRouteRef.current);
+        } catch {
+            setConnectionError("Could not abandon the lobby yet. Please try again.");
+        } finally {
+            setCancelling(false);
         }
     }, [matchId]);
 
@@ -149,7 +195,6 @@ export default function MatchLobbyPage() {
                 if (s <= 1) {
                     setTimedOut(true);
                     if (timerRef.current) clearInterval(timerRef.current);
-                    setTimeout(() => routerRef.current.push("/matches/queue"), 3000);
                     return 0;
                 }
                 return s - 1;
@@ -158,6 +203,24 @@ export default function MatchLobbyPage() {
         return () => { if (timerRef.current) clearInterval(timerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        if (!timedOut || timeoutHandledRef.current) return;
+        timeoutHandledRef.current = true;
+
+        const token = getAccessToken();
+        if (token) {
+            fetch(`/api/matches/${matchId}/lobby/cancel`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            }).catch(() => {});
+        }
+
+        const timeoutId = setTimeout(() => {
+            routerRef.current.push(returnRouteRef.current);
+        }, 3000);
+        return () => clearTimeout(timeoutId);
+    }, [timedOut, matchId]);
 
     // Poll every 2s as fallback (stable — runs once)
     useEffect(() => {
@@ -216,7 +279,9 @@ export default function MatchLobbyPage() {
     const leftSidePlayers = shouldSwapSinglesSides ? team2 : team1;
     const rightSidePlayers = shouldSwapSinglesSides ? team1 : team2;
     const amEntered    = myEntry?.status === "entered" || entered;
-    const enteredCount = lobby.players.filter(p => p.status === "entered").length;
+    const totalPlayers = lobby.total_players || lobby.players.length;
+    const enteredCount = lobby.entered_count ?? lobby.players.filter(p => p.status === "entered").length;
+    const remainingPlayers = Math.max(0, totalPlayers - enteredCount);
     const sportEmoji   = SPORT_EMOJI[lobby.sport] ?? "🎾";
     const timerColor   = secs <= 30 ? "text-red-400" : secs <= 60 ? "text-amber-400" : "text-zinc-400";
 
@@ -238,7 +303,7 @@ export default function MatchLobbyPage() {
                     {/* Timer */}
                     {!timedOut ? (
                         <div className={`text-center text-sm font-mono font-bold ${timerColor}`}>
-                            {enteredCount}/{lobby.players.length} players entered &nbsp;·&nbsp; {String(Math.floor(secs / 60)).padStart(2, "0")}:{String(secs % 60).padStart(2, "0")} remaining
+                            {enteredCount}/{totalPlayers} players entered &nbsp;·&nbsp; {String(Math.floor(secs / 60)).padStart(2, "0")}:{String(secs % 60).padStart(2, "0")} remaining
                         </div>
                     ) : (
                         <div className="text-center text-red-400 text-sm font-semibold">
@@ -293,6 +358,52 @@ export default function MatchLobbyPage() {
                         )}
                     </div>
 
+                    <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <p className="text-[11px] font-black uppercase tracking-[0.18em] text-cyan-300">Connection Checkpoint</p>
+                                <p className="mt-1 text-sm text-cyan-50/85">
+                                    Everyone needs to enter this lobby before the match can open and referee invites become available.
+                                </p>
+                            </div>
+                            <div className="text-right shrink-0">
+                                <p className="text-lg font-black text-white">{enteredCount}/{totalPlayers}</p>
+                                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-200/70">
+                                    {remainingPlayers === 0 ? "ready" : `${remainingPlayers} left`}
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-300">
+                            {amEntered
+                                ? "You are checked in. If the page froze or your signal dipped, use Reconnect to refresh your slot."
+                                : "Tap Reconnect if your connection is unstable or the lobby looks stuck."}
+                        </div>
+
+                        {connectionError && (
+                            <p className="text-xs font-medium text-amber-300">
+                                {connectionError}
+                            </p>
+                        )}
+
+                        <div className="flex gap-2">
+                            <button
+                                onClick={() => { void handleReconnect(); }}
+                                disabled={refreshing || entering || timedOut}
+                                className="flex-1 py-2.5 text-sm font-semibold text-cyan-100 bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-400/20 rounded-xl transition-all disabled:opacity-50"
+                            >
+                                {refreshing || entering ? "Reconnecting..." : "Reconnect"}
+                            </button>
+                            <button
+                                onClick={() => setConfirmCancel(true)}
+                                disabled={cancelling || timedOut}
+                                className="flex-1 py-2.5 text-sm font-semibold text-red-300 bg-red-500/8 hover:bg-red-500/15 border border-red-500/20 rounded-xl transition-all disabled:opacity-50"
+                            >
+                                Abandon Match
+                            </button>
+                        </div>
+                    </div>
+
                     {/* Status / CTA */}
                     {lobby.all_entered ? (
                         <div className="flex items-center justify-center gap-2 py-3 text-emerald-400 text-sm font-semibold">
@@ -301,7 +412,7 @@ export default function MatchLobbyPage() {
                         </div>
                     ) : amEntered ? (
                         <div className="text-center text-zinc-400 text-sm py-2">
-                            You&apos;re in the lobby. Waiting for {lobby.players.length - enteredCount} more player{lobby.players.length - enteredCount !== 1 ? "s" : ""}...
+                            You&apos;re in the lobby. Waiting for {remainingPlayers} more player{remainingPlayers !== 1 ? "s" : ""}...
                         </div>
                     ) : (
                         <button
@@ -324,23 +435,11 @@ export default function MatchLobbyPage() {
                                     Keep waiting
                                 </button>
                                 <button
-                                    onClick={async () => {
-                                        const token = getAccessToken();
-                                        if (!token) return;
-                                        setCancelling(true);
-                                        try {
-                                            await fetch(`/api/matches/${matchId}/lobby/cancel`, {
-                                                method: "POST",
-                                                headers: { Authorization: `Bearer ${token}` },
-                                            });
-                                            router.push("/matches/party");
-                                        } catch {}
-                                        finally { setCancelling(false); }
-                                    }}
+                                    onClick={() => { void handleAbandonMatch(); }}
                                     disabled={cancelling}
                                     className="flex-1 py-2.5 text-sm font-semibold text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/60 bg-red-500/5 hover:bg-red-500/10 rounded-xl transition-all disabled:opacity-50"
                                 >
-                                    {cancelling ? "Cancelling..." : "Yes, cancel"}
+                                    {cancelling ? "Abandoning..." : "Yes, abandon"}
                                 </button>
                             </div>
                         ) : (
@@ -348,7 +447,7 @@ export default function MatchLobbyPage() {
                                 onClick={() => setConfirmCancel(true)}
                                 className="w-full py-2.5 text-sm text-zinc-500 hover:text-red-400 border border-transparent hover:border-red-500/20 rounded-xl transition-all"
                             >
-                                Cancel lobby
+                                Abandon match
                             </button>
                         )
                     )}

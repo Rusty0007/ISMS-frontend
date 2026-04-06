@@ -4,7 +4,6 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
-import NavBar from "@/components/NavBar";
 
 const SPORTS_META: Record<string, { label: string; emoji: string; color: string; bg: string; border: string }> = {
     pickleball:   { label: "Pickleball",   emoji: "🏓", color: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/20"    },
@@ -91,11 +90,11 @@ export default function MatchDetailPage() {
     const reconnectRef    = useRef<ReturnType<typeof setTimeout> | null>(null);
     const matchStatusRef  = useRef<string>("pending"); // track terminal state for reconnect guard
 
-    function getToken() {
+    const getToken = useCallback(() => {
         const t = getAccessToken();
         if (!t) router.replace("/login");
         return t;
-    }
+    }, [router]);
 
     // Fetch current user ID once on mount
     useEffect(() => {
@@ -182,7 +181,7 @@ export default function MatchDetailPage() {
         } catch (err) {
             console.error("[match/page] fetchMatch error:", err);
         }
-    }, [matchId]);
+    }, [matchId, router]);
 
     // Keep terminal-state ref in sync so the WS reconnect guard can read it
     useEffect(() => {
@@ -194,7 +193,7 @@ export default function MatchDetailPage() {
         const token = getToken();
         if (!token) return;
         fetchMatch(token).finally(() => setLoading(false));
-    }, [fetchMatch]);
+    }, [fetchMatch, getToken]);
 
     // Load pending referee invites for this match
     useEffect(() => {
@@ -486,7 +485,6 @@ export default function MatchDetailPage() {
         );
     }
 
-    const sportMeta   = SPORTS_META[match.sport];
     const isDoubles   = match.match_format === "doubles";
     const isParticipant = [
         match.player1_id, match.player2_id, match.player3_id, match.player4_id,
@@ -530,7 +528,6 @@ export default function MatchDetailPage() {
     if (match.status === "assembling") {
         return (
             <div className="min-h-screen bg-zinc-950 text-white flex flex-col">
-                <NavBar backHref="/matches/queue" backLabel="← Queue" />
                 <main className="flex-1 flex flex-col items-center justify-center p-6 max-w-lg mx-auto w-full gap-8">
                     <AssemblingView 
                         match={match} 
@@ -541,23 +538,6 @@ export default function MatchDetailPage() {
                 </main>
             </div>
         );
-    }
-
-    // Partner / opponent info for doubles
-    let partnerName: string | null = null;
-    let opponentNames: string[] = [];
-    if (isDoubles && userId && isParticipant) {
-        const team1 = [match.player1_id, match.player3_id].filter(Boolean) as string[];
-        const team2 = [match.player2_id, match.player4_id].filter(Boolean) as string[];
-        if (team1.includes(userId)) {
-            const partnerId = team1.find(id => id !== userId);
-            partnerName  = partnerId ? name(partnerId) : null;
-            opponentNames = team2.map(id => name(id));
-        } else {
-            const partnerId = team2.find(id => id !== userId);
-            partnerName  = partnerId ? name(partnerId) : null;
-            opponentNames = team1.map(id => name(id));
-        }
     }
 
     const leftPrimaryId = shouldSwapSinglesSides ? match.player2_id : match.player1_id;
@@ -587,9 +567,7 @@ export default function MatchDetailPage() {
                 }}
             />
 
-            <NavBar backHref="/matches" backLabel="← My Matches" />
-
-            <main className="relative z-10 max-w-2xl mx-auto px-6 py-10 flex flex-col gap-6">
+            <main className="relative z-10 max-w-2xl mx-auto px-4 py-6 sm:px-6 sm:py-10 flex flex-col gap-4 sm:gap-6">
 
                 {/* Match header card (Scoreboard) */}
                 <MatchScoreboard 
@@ -611,7 +589,7 @@ export default function MatchDetailPage() {
 
                 {/* Invalidated banner */}
                 {isInvalidated && (
-                    <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-5 flex items-start gap-4">
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                         <span className="text-2xl">🚫</span>
                         <div>
                             <p className="font-black text-red-400 text-sm">Match Invalidated</p>
@@ -619,12 +597,18 @@ export default function MatchDetailPage() {
                                 The referee left the match. This match has been voided and no ratings will be affected.
                             </p>
                         </div>
+                        <button
+                            onClick={() => router.push("/dashboard")}
+                            className="inline-flex items-center justify-center rounded-xl border border-red-400/20 bg-red-500/10 px-5 py-2.5 text-xs font-black uppercase tracking-widest text-red-100 transition-colors hover:bg-red-500/20 sm:self-center"
+                        >
+                            Quit
+                        </button>
                     </div>
                 )}
 
                 {/* Waiting for referee banner */}
                 {isOngoing && !hasReferee && isParticipant && (
-                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-5 flex items-start gap-4">
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 sm:p-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
                         <span className="text-2xl">⚠️</span>
                         <div>
                             <p className="font-black text-amber-400 text-sm">Referee Required</p>
@@ -652,18 +636,18 @@ export default function MatchDetailPage() {
 
                 {/* Sets */}
                 {sets.length > 0 && (
-                    <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
-                        <div className="flex items-center justify-between gap-4 mb-5">
+                    <div className="bg-zinc-900 border border-white/10 rounded-2xl p-4 sm:p-6">
+                        <div className="flex flex-col gap-3 mb-5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
                             <h2 className="text-xs font-bold tracking-[0.3em] text-zinc-500 uppercase">Sets</h2>
-                            <div className="flex gap-6 text-xs text-zinc-600 min-w-0">
-                                <span className="max-w-24 truncate text-left">{isDoubles ? "Team 1" : leftSideName}</span>
-                                <span className="max-w-24 truncate text-right">{isDoubles ? "Team 2" : rightSideName}</span>
+                            <div className="grid grid-cols-2 gap-3 text-xs text-zinc-600 min-w-0 w-full sm:w-auto sm:flex sm:gap-6">
+                                <span className="truncate text-left">{isDoubles ? "Team 1" : leftSideName}</span>
+                                <span className="truncate text-right">{isDoubles ? "Team 2" : rightSideName}</span>
                             </div>
                         </div>
                         <div className="flex flex-col gap-4">
                             {sets.map(set => (
-                                <div key={set.set_number} className="flex items-center gap-4">
-                                    <span className="text-xs text-zinc-600 w-12">Set {set.set_number}</span>
+                                <div key={set.set_number} className="flex items-center justify-between gap-2 sm:gap-4">
+                                    <span className="text-xs text-zinc-600 w-11 shrink-0 sm:w-12">Set {set.set_number}</span>
                                     {canScore ? (
                                         <>
                                             <ScoreInput
@@ -923,8 +907,8 @@ function RefereeInvitePanel({
 
     return (
         <div className="bg-zinc-900 border border-zinc-700/50 rounded-2xl p-5 flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-                <p className="text-sm text-zinc-400">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-zinc-400 sm:pr-4">
                     {invites.length === 0
                         ? "No referee assigned — scores are self-reported."
                         : "Waiting for a referee to accept..."}
@@ -944,7 +928,7 @@ function RefereeInvitePanel({
                     {invites.map(inv => (
                         <div
                             key={inv.invite_id}
-                            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-sm ${
+                            className={`flex flex-col gap-2 px-3 py-2.5 rounded-xl border text-sm sm:flex-row sm:items-center sm:gap-3 ${
                                 inv.status === "pending"
                                     ? "border-amber-500/20 bg-amber-500/5"
                                     : inv.status === "declined"
@@ -962,13 +946,13 @@ function RefereeInvitePanel({
                             {/* Who invited whom */}
                             <div className="flex-1 min-w-0">
                                 <span className="text-zinc-300 font-semibold">@{inv.invited_username}</span>
-                                <span className="text-zinc-500 text-xs ml-2">
+                                <span className="text-zinc-500 text-xs ml-0 mt-0.5 block sm:ml-2 sm:mt-0 sm:inline">
                                     invited by {inv.invited_by_name}
                                 </span>
                             </div>
 
                             {/* Status label + countdown */}
-                            <div className="flex items-center gap-2 shrink-0">
+                            <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
                                 {inv.status === "pending" && (
                                     <InviteCountdown expiresAt={inv.expires_at} />
                                 )}
@@ -1015,6 +999,7 @@ function StatusBadge({ status }: { status: string }) {
     );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function PlayerSlot({
     displayName, label, setsWon, isWinner, isCompleted,
 }: {
@@ -1033,6 +1018,7 @@ function PlayerSlot({
     );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function TeamSlot({
     label, player1Name, player2Name, setsWon, isWinner, isCompleted,
 }: {
@@ -1115,67 +1101,69 @@ function MatchScoreboard({
             <div className={`absolute -top-24 -left-24 w-64 h-64 ${meta.bg} blur-[100px] rounded-full opacity-40`} />
             <div className={`absolute -bottom-24 -right-24 w-64 h-64 ${meta.bg} blur-[100px] rounded-full opacity-40`} />
 
-            <div className="relative z-10 p-8 flex flex-col gap-8">
+            <div className="relative z-10 p-4 sm:p-8 flex flex-col gap-5 sm:gap-8">
                 {/* Header info */}
-                <div className="flex items-center justify-between border-b border-white/5 pb-6">
-                    <div className="flex items-center gap-4">
-                        <div className={`w-12 h-12 ${meta.bg} rounded-2xl flex items-center justify-center text-2xl`}>
+                <div className="flex flex-col gap-4 border-b border-white/5 pb-4 sm:flex-row sm:items-center sm:justify-between sm:pb-6">
+                    <div className="flex items-center gap-3 min-w-0 sm:gap-4">
+                        <div className={`w-11 h-11 shrink-0 ${meta.bg} rounded-2xl flex items-center justify-center text-2xl sm:w-12 sm:h-12`}>
                             {meta.emoji}
                         </div>
-                        <div>
-                            <h2 className={`font-black text-xl tracking-tight ${meta.color}`}>{meta.label}</h2>
-                            <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">
+                        <div className="min-w-0">
+                            <h2 className={`font-black text-lg tracking-tight ${meta.color} sm:text-xl`}>{meta.label}</h2>
+                            <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.2em] sm:tracking-widest">
                                 {match.match_type.replace("_", " ")} • {match.match_format.replace("_", " ")}
                             </p>
                         </div>
                     </div>
-                    <StatusBadge status={match.status} />
+                    <div className="self-start sm:self-auto">
+                        <StatusBadge status={match.status} />
+                    </div>
                 </div>
 
                 {/* Main Score Display */}
-                <div className="flex items-center justify-between gap-4">
+                <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4">
                     {/* Team/Player 1 */}
-                    <div className="flex-1 flex flex-col items-center gap-4 text-center">
+                    <div className="min-w-0 flex flex-col items-center gap-3 text-center sm:gap-4">
                         <div className="flex -space-x-2">
                             <PlayerAvatar name={name(leftPrimaryId)} isWinner={leftIsWinner} />
                             {isDoubles && <PlayerAvatar name={name(leftSecondaryId)} isWinner={leftIsWinner} />}
                         </div>
-                        <div className="flex flex-col gap-1">
-                            <span className="text-sm font-black text-white">{isDoubles ? "Team 1" : name(leftPrimaryId)}</span>
-                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase">{name(leftPrimaryId)} & {name(leftSecondaryId)}</span>}
+                        <div className="min-w-0 flex flex-col gap-1">
+                            <span className="text-xs font-black text-white sm:text-sm">{isDoubles ? "Team 1" : name(leftPrimaryId)}</span>
+                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase leading-relaxed break-words">{name(leftPrimaryId)} & {name(leftSecondaryId)}</span>}
                         </div>
                     </div>
 
                     {/* SCORE BOARD */}
-                    <div className="flex flex-col items-center gap-2 px-6">
-                        <div className="flex items-center gap-4">
-                            <span className={`text-6xl font-black tabular-nums ${leftIsWinner ? "text-white" : "text-zinc-400"}`}>
+                    <div className="flex flex-col items-center gap-2 px-1 sm:px-6">
+                        <div className="flex items-center gap-2 sm:gap-4">
+                            <span className={`text-4xl font-black tabular-nums sm:text-6xl ${leftIsWinner ? "text-white" : "text-zinc-400"}`}>
                                 {leftSetsWon}
                             </span>
-                            <span className="text-2xl font-black text-zinc-700">:</span>
-                            <span className={`text-6xl font-black tabular-nums ${rightIsWinner ? "text-white" : "text-zinc-400"}`}>
+                            <span className="text-xl font-black text-zinc-700 sm:text-2xl">:</span>
+                            <span className={`text-4xl font-black tabular-nums sm:text-6xl ${rightIsWinner ? "text-white" : "text-zinc-400"}`}>
                                 {rightSetsWon}
                             </span>
                         </div>
                         {isCompleted ? (
-                            <span className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.3em]">Final Score</span>
+                            <span className="text-[9px] text-center font-black text-zinc-500 uppercase tracking-[0.2em] sm:text-[10px] sm:tracking-[0.3em]">Final Score</span>
                         ) : (
                             <div className="flex items-center gap-2">
                                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                                <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.3em]">Live Sets</span>
+                                <span className="text-[9px] font-black text-emerald-500 uppercase tracking-[0.2em] sm:text-[10px] sm:tracking-[0.3em]">Live Sets</span>
                             </div>
                         )}
                     </div>
 
                     {/* Team/Player 2 */}
-                    <div className="flex-1 flex flex-col items-center gap-4 text-center">
+                    <div className="min-w-0 flex flex-col items-center gap-3 text-center sm:gap-4">
                         <div className="flex -space-x-2">
                             <PlayerAvatar name={name(rightPrimaryId)} isWinner={rightIsWinner} />
                             {isDoubles && <PlayerAvatar name={name(rightSecondaryId)} isWinner={rightIsWinner} />}
                         </div>
-                        <div className="flex flex-col gap-1">
-                            <span className="text-sm font-black text-white">{isDoubles ? "Team 2" : name(rightPrimaryId)}</span>
-                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase">{name(rightPrimaryId)} & {name(rightSecondaryId)}</span>}
+                        <div className="min-w-0 flex flex-col gap-1">
+                            <span className="text-xs font-black text-white sm:text-sm">{isDoubles ? "Team 2" : name(rightPrimaryId)}</span>
+                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase leading-relaxed break-words">{name(rightPrimaryId)} & {name(rightSecondaryId)}</span>}
                         </div>
                     </div>
                 </div>
@@ -1209,9 +1197,9 @@ function MatchScoreboard({
 function PlayerAvatar({ name, isWinner }: { name: string; isWinner: boolean }) {
     const initial = name[1]?.toUpperCase() || "?";
     return (
-        <div className={`w-14 h-14 rounded-2xl border-2 ${isWinner ? "border-yellow-500 shadow-lg shadow-yellow-500/20" : "border-white/10"} bg-zinc-800 flex items-center justify-center relative overflow-hidden group`}>
+        <div className={`w-10 h-10 rounded-2xl border-2 sm:w-14 sm:h-14 ${isWinner ? "border-yellow-500 shadow-lg shadow-yellow-500/20" : "border-white/10"} bg-zinc-800 flex items-center justify-center relative overflow-hidden group`}>
             <div className={`absolute inset-0 bg-gradient-to-br from-white/5 to-transparent`} />
-            <span className="text-xl font-black text-white relative z-10">{initial}</span>
+            <span className="text-base font-black text-white relative z-10 sm:text-xl">{initial}</span>
             {isWinner && (
                 <div className="absolute top-0 right-0 p-1">
                     <div className="w-2 h-2 bg-yellow-500 rounded-full" />
@@ -1236,21 +1224,21 @@ function AssemblingView({
     const joinedCount = playerIds.length;
 
     return (
-        <div className="w-full flex flex-col items-center gap-12">
+        <div className="w-full flex flex-col items-center gap-8 sm:gap-12">
             <div className="text-center space-y-3">
-                <div className={`mx-auto w-20 h-20 ${meta.bg} rounded-[2rem] flex items-center justify-center text-4xl shadow-2xl border border-white/5`}>
+                <div className={`mx-auto w-16 h-16 ${meta.bg} rounded-[1.5rem] flex items-center justify-center text-3xl shadow-2xl border border-white/5 sm:w-20 sm:h-20 sm:rounded-[2rem] sm:text-4xl`}>
                     {meta.emoji}
                 </div>
                 <div>
-                    <h1 className="text-3xl font-black tracking-tight mb-1">Assembling...</h1>
-                    <p className="text-zinc-500 text-sm font-bold uppercase tracking-widest flex items-center justify-center gap-2">
+                    <h1 className="text-2xl font-black tracking-tight mb-1 sm:text-3xl">Assembling...</h1>
+                    <p className="text-zinc-500 text-xs font-bold uppercase tracking-[0.2em] flex items-center justify-center gap-2 sm:text-sm sm:tracking-widest">
                         <IconClock className="w-4 h-4" />
                         Waiting for {slots - joinedCount} more player{slots - joinedCount === 1 ? "" : "s"}
                     </p>
                 </div>
             </div>
 
-            <div className="w-full grid grid-cols-2 gap-4">
+            <div className="w-full grid grid-cols-2 gap-3 sm:gap-4">
                 {[...Array(slots)].map((_, i) => {
                     const pid = [match.player1_id, match.player2_id, match.player3_id, match.player4_id][i];
                     const profile = pid ? playerProfiles[pid] : null;
@@ -1265,20 +1253,20 @@ function AssemblingView({
                 })}
             </div>
 
-            <div className="w-full bg-zinc-900/50 border border-white/5 rounded-3xl p-6 flex items-center justify-between">
-                <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center">
+            <div className="w-full bg-zinc-900/50 border border-white/5 rounded-3xl p-4 sm:p-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3 sm:gap-4">
+                    <div className="w-10 h-10 bg-emerald-500/10 rounded-xl flex items-center justify-center shrink-0">
                         <span className="w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
                     </div>
-                    <div>
+                    <div className="min-w-0">
                         <p className="text-xs font-black text-white uppercase tracking-wider">Live Queue</p>
-                        <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Searching for matched {match.sport} players</p>
+                        <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.18em] leading-relaxed sm:tracking-widest">Searching for matched {match.sport} players</p>
                     </div>
                 </div>
                 <button
                     onClick={onLeave}
                     disabled={isActionLoading}
-                    className="flex items-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-black px-4 py-2.5 rounded-xl transition-all border border-red-500/10 disabled:opacity-40"
+                    className="w-full sm:w-auto flex items-center justify-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs font-black px-4 py-2.5 rounded-xl transition-all border border-red-500/10 disabled:opacity-40"
                 >
                     <IconLeave className="w-3.5 h-3.5" />
                     Leave
@@ -1290,26 +1278,26 @@ function AssemblingView({
 
 function AssemblingSlot({ username, isOccupied, index }: { username?: string; isOccupied: boolean; index: number }) {
     return (
-        <div className={`aspect-square rounded-[2rem] border-2 flex flex-col items-center justify-center gap-3 transition-all duration-500 ${
+        <div className={`aspect-square rounded-[1.5rem] sm:rounded-[2rem] border-2 flex flex-col items-center justify-center gap-2 sm:gap-3 transition-all duration-500 ${
             isOccupied 
                 ? "bg-zinc-800 border-white/10 shadow-xl shadow-black/20" 
                 : "bg-zinc-900/30 border-white/5 border-dashed"
         }`}>
             {isOccupied ? (
                 <>
-                    <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center text-xl font-black text-white">
+                    <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white/10 rounded-2xl flex items-center justify-center text-lg sm:text-xl font-black text-white">
                         {username ? username[0].toUpperCase() : "?"}
                     </div>
-                    <span className="text-xs font-black text-white tracking-tight truncate w-full text-center px-2">
+                    <span className="text-[11px] sm:text-xs font-black text-white tracking-tight truncate w-full text-center px-2">
                         @{username || "..."}
                     </span>
                 </>
             ) : (
                 <>
-                    <div className="w-12 h-12 border-2 border-white/5 border-dashed rounded-2xl flex items-center justify-center">
-                        <span className="text-zinc-800 text-xl font-black">{index + 1}</span>
+                    <div className="w-10 h-10 sm:w-12 sm:h-12 border-2 border-white/5 border-dashed rounded-2xl flex items-center justify-center">
+                        <span className="text-zinc-800 text-lg sm:text-xl font-black">{index + 1}</span>
                     </div>
-                    <span className="text-[10px] font-bold text-zinc-700 uppercase tracking-widest animate-pulse">Waiting...</span>
+                    <span className="text-[9px] sm:text-[10px] font-bold text-zinc-700 uppercase tracking-[0.18em] sm:tracking-widest animate-pulse">Waiting...</span>
                 </>
             )}
         </div>

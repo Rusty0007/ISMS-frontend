@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { getAccessToken } from "@/lib/auth";
 
 const SPORT_EMOJI: Record<string, string> = {
@@ -13,6 +14,10 @@ const SPORT_EMOJI: Record<string, string> = {
 
 interface QueueInfo {
     in_queue: boolean;
+    active_match?: boolean;
+    match_id?: string;
+    match_status?: string;
+    return_route?: string;
     sport?: string;
     match_format?: string;
     match_mode?: string;
@@ -49,8 +54,11 @@ function useElapsed(queuedAt: string | null | undefined) {
 }
 
 export default function QueueBanner() {
+    const router = useRouter();
+    const pathname = usePathname();
     const [info, setInfo] = useState<QueueInfo | null>(null);
     const [leaving, setLeaving] = useState(false);
+    const [abandoning, setAbandoning] = useState(false);
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const elapsed = useElapsed(info?.in_queue ? info.queued_at : null);
 
@@ -92,6 +100,62 @@ export default function QueueBanner() {
         } finally {
             setLeaving(false);
         }
+    }
+
+    async function handleAbandonMatch() {
+        if (!info?.match_id || info.match_status !== "awaiting_players") return;
+        setAbandoning(true);
+        try {
+            const token = getAccessToken();
+            if (!token) return;
+            await fetch(`/api/matches/${info.match_id}/lobby/cancel`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            setInfo({ in_queue: false });
+            router.push(info.return_route ?? "/matches/queue");
+        } catch {
+            // best effort
+        } finally {
+            setAbandoning(false);
+        }
+    }
+
+    if (
+        info?.active_match &&
+        info.match_id &&
+        info.match_status === "awaiting_players" &&
+        !pathname?.endsWith("/lobby")
+    ) {
+        return (
+            <div className="relative z-20 bg-emerald-500/10 border-b border-emerald-500/20 px-4 py-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                    <span className="relative flex h-2.5 w-2.5 shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-400" />
+                    </span>
+                    <span className="text-sm font-semibold text-emerald-300 truncate">
+                        Match lobby ready. Reconnect before the room times out.
+                    </span>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                    <Link
+                        href={`/matches/${info.match_id}/lobby`}
+                        className="text-xs bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-200 font-semibold px-3 py-1 rounded-full transition-colors"
+                    >
+                        Reconnect
+                    </Link>
+                    <button
+                        onClick={handleAbandonMatch}
+                        disabled={abandoning}
+                        className="text-xs bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 font-semibold px-3 py-1 rounded-full transition-colors disabled:opacity-50"
+                    >
+                        {abandoning ? "Abandoning..." : "Abandon"}
+                    </button>
+                </div>
+            </div>
+        );
     }
 
     if (!info?.in_queue) return null;

@@ -61,15 +61,21 @@ function IconChevronRight({ className = "w-4 h-4" }) {
     return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>;
 }
 
-function IconX({ className = "w-4 h-4" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
-}
-
 const FORMATS = [
     { key: "singles",       label: "1v1 Singles",       desc: "Face one opponent head-to-head.",              icon: "👤" },
     { key: "doubles",       label: "2v2 Doubles",       desc: "Solo queue — 4 players assemble into 2 teams.", icon: "👥" },
     { key: "mixed_doubles", label: "2v2 Mixed Doubles", desc: "Mixed gender teams — 2 players per side.",      icon: "⚥" },
 ];
+
+const FORMAT_LABELS: Record<string, string> = {
+    singles: "singles",
+    doubles: "doubles",
+    mixed_doubles: "mixed doubles",
+};
+
+function ratingKey(sportKey: string, formatKey: string) {
+    return `${sportKey}:${formatKey}`;
+}
 
 type QueueMode = "quick" | "ranked" | "club";
 
@@ -228,6 +234,12 @@ export default function QueuePage() {
         if (!stillEligible) setPreferredClubId("");
     }, [myClubs, preferredClubId, sport]);
 
+    useEffect(() => {
+        if (format !== "singles" && queueMode === "club") {
+            setQueueMode("quick");
+        }
+    }, [format, queueMode]);
+
     // Block navigation while in queue
     useEffect(() => {
         if (queueState !== "queued" && queueState !== "assembling") return;
@@ -265,12 +277,13 @@ export default function QueuePage() {
                 setUserSports(sports);
                 
                 const ratings: { sport: string; match_format: string; rating_status: string; matches_played: number }[] = data.ratings ?? [];
-                const singlesRatings = Object.fromEntries(
-                    ratings
-                        .filter((entry) => entry.match_format === "singles")
-                        .map((entry) => [entry.sport, { rating_status: entry.rating_status, matches_played: entry.matches_played }])
+                const ratingsByFormat = Object.fromEntries(
+                    ratings.map((entry) => [
+                        ratingKey(entry.sport, entry.match_format),
+                        { rating_status: entry.rating_status, matches_played: entry.matches_played },
+                    ])
                 );
-                setUserRatings(singlesRatings);
+                setUserRatings(ratingsByFormat);
 
                 if (sports.length === 1) setSport(sports[0]);
             })
@@ -290,14 +303,21 @@ export default function QueuePage() {
 
         fetch("/api/matches/queue/me", { headers: { Authorization: `Bearer ${token}` } })
             .then(r => r.ok ? r.json() : null)
-            .then(data => {
+            .then(async data => {
+                if (data?.active_match && data.match_id) {
+                    const target = await resolveMatchTarget(data.match_id, data.match_status);
+                    router.replace(target);
+                    return;
+                }
                 if (!data?.in_queue) return;
 
                 const restoredSport = data.sport ?? "";
                 const restoredFormat = data.match_format ?? "singles";
-                const restoredMode: QueueMode = data.match_mode === "ranked" || data.match_mode === "club"
-                    ? data.match_mode
-                    : "quick";
+                const restoredMode: QueueMode = data.match_mode === "ranked"
+                    ? "ranked"
+                    : data.match_mode === "club" && restoredFormat === "singles"
+                        ? "club"
+                        : "quick";
                 const joined = Number(data.players_joined ?? (restoredFormat === "singles" ? 1 : 0));
 
                 setSport(restoredSport);
@@ -311,7 +331,7 @@ export default function QueuePage() {
                     setQueueState(joined >= 4 ? "optimizing" : "assembling");
                 }
 
-                startPolling(restoredSport, restoredFormat, restoredFormat === "singles" ? restoredMode : "quick", token);
+                startPolling(restoredSport, restoredFormat, restoredMode, token);
             })
             .catch(() => {/* non-critical */});
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -322,14 +342,35 @@ export default function QueuePage() {
         return t;
     }
 
+    async function resolveMatchTarget(matchId: string, statusHint?: string) {
+        if (statusHint === "awaiting_players") return `/matches/${matchId}/lobby`;
+        if (statusHint === "ongoing" || statusHint === "pending_approval") return `/matches/${matchId}`;
+
+        const token = getAccessToken();
+        if (!token) return `/matches/${matchId}`;
+
+        try {
+            const res = await fetch(`/api/matches/${matchId}`, {
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!res.ok) return `/matches/${matchId}`;
+            const data = await res.json();
+            const liveStatus = data?.match?.status ?? data?.status;
+            return liveStatus === "awaiting_players" ? `/matches/${matchId}/lobby` : `/matches/${matchId}`;
+        } catch {
+            return `/matches/${matchId}`;
+        }
+    }
+
     // ── Queue Actions ──────────────────────────────────────────────────────
 
     async function handleJoinQueue() {
         if (!sport) { setError("Please select a sport."); return; }
-        const activeMode = format === "singles" ? queueMode : "quick";
-        const selectedSinglesRating = userRatings[sport] ?? null;
-        if (format === "singles" && activeMode === "ranked" && selectedSinglesRating?.rating_status !== "RATED") {
-            setError("Ranked queue unlocks after 10 calibrated singles matches for this sport.");
+        const activeMode: QueueMode = format !== "singles" && queueMode === "club" ? "quick" : queueMode;
+        const selectedRating = userRatings[ratingKey(sport, format)] ?? null;
+        const formatLabel = FORMAT_LABELS[format] ?? format.replace("_", " ");
+        if (activeMode === "ranked" && selectedRating?.rating_status !== "RATED") {
+            setError(`Ranked queue unlocks after 10 calibrated ${formatLabel} matches for this sport.`);
             return;
         }
         if (format === "singles" && activeMode === "club" && !preferredClubId) {
@@ -357,7 +398,7 @@ export default function QueuePage() {
             if (!res.ok) { setError(data.detail || "Failed to join queue."); return; }
 
             if (data.status === "matched") {
-                await handleMatchFound(data.match_id);
+                await handleMatchFound(data.match_id, data.match_status);
                 return;
             }
             if (data.status === "assembling") {
@@ -392,7 +433,7 @@ export default function QueuePage() {
 
                 if (data.status === "matched") {
                     if (pollRef.current) clearInterval(pollRef.current);
-                    void handleMatchFound(data.match_id);
+                    void handleMatchFound(data.match_id, data.match_status);
                 } else if (data.status === "assembling" && data.players_joined !== undefined) {
                     const joined = data.players_joined as number;
                     setPlayersJoined(joined);
@@ -403,23 +444,24 @@ export default function QueuePage() {
         }, 3000);
     }
 
-    async function handleMatchFound(id: string) {
+    async function handleMatchFound(id: string, statusHint?: string) {
         if (!id) return;
         if (navigatingMatchIdRef.current === id) return;
         navigatingMatchIdRef.current = id;
         if (redirectRef.current) clearTimeout(redirectRef.current);
         if (pollRef.current) clearInterval(pollRef.current);
         setQueueState("matched");
+        const target = await resolveMatchTarget(id, statusHint);
         // Delay for 3.5s to show the "Match Found!" animation
         redirectRef.current = setTimeout(() => {
-            router.push(`/matches/${id}`);
+            router.push(target);
         }, 3500);
     }
 
     async function handleLeaveQueue() {
         const token = getToken();
         if (!token) return;
-        const activeMode = format === "singles" ? queueMode : "quick";
+        const activeMode: QueueMode = format !== "singles" && queueMode === "club" ? "quick" : queueMode;
         if (pollRef.current) clearInterval(pollRef.current);
         if (redirectRef.current) clearTimeout(redirectRef.current);
         navigatingMatchIdRef.current = null;
@@ -436,18 +478,22 @@ export default function QueuePage() {
     // ── Derived ────────────────────────────────────────────────────────────
 
     const selectedMeta = SPORTS_META[sport];
-    const selectedSinglesRating = sport ? userRatings[sport] ?? null : null;
-    const activeMode: QueueMode = format === "singles" ? queueMode : "quick";
+    const selectedRating = sport ? userRatings[ratingKey(sport, format)] ?? null : null;
+    const activeMode: QueueMode = format !== "singles" && queueMode === "club" ? "quick" : queueMode;
+    const formatLabel = FORMAT_LABELS[format] ?? format.replace("_", " ");
+    const availableModes: QueueMode[] = format === "singles" ? ["quick", "ranked", "club"] : ["quick", "ranked"];
     const selectedModeMeta = MATCH_MODE_META[activeMode];
     const eligibleClubs = myClubs.filter((club) => !sport || !club.sport || club.sport === sport);
-    const rankedUnlocked = selectedSinglesRating?.rating_status === "RATED";
+    const rankedUnlocked = selectedRating?.rating_status === "RATED";
     const clubModeBlocked = format === "singles" && activeMode === "club" && !preferredClubId;
     const primaryActionLabel = loading
         ? "Synchronizing..."
-        : format !== "singles"
-            ? "Enter Solo Assembly"
-            : activeMode === "ranked"
+        : activeMode === "ranked"
+            ? format === "singles"
                 ? "Join Ranked Queue"
+                : "Join Ranked Team Queue"
+            : format !== "singles"
+                ? "Enter Team Assembly"
                 : activeMode === "club"
                     ? "Search Club Session"
                     : "Initiate Matchmaking";
@@ -563,14 +609,13 @@ export default function QueuePage() {
                                     </div>
                                 </section>
 
-                                {format === "singles" ? (
-                                    <section className="space-y-4">
-                                        <header className="flex items-center gap-4">
-                                            <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Match Lane</h2>
-                                            <div className="h-px bg-zinc-800/50 flex-1" />
-                                        </header>
-                                        <div className="grid grid-cols-1 gap-3">
-                                            {(["quick", "ranked", "club"] as QueueMode[]).map((mode) => {
+                                <section className="space-y-4">
+                                    <header className="flex items-center gap-4">
+                                        <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Match Lane</h2>
+                                        <div className="h-px bg-zinc-800/50 flex-1" />
+                                    </header>
+                                    <div className="grid grid-cols-1 gap-3">
+                                        {availableModes.map((mode) => {
                                                 const meta = MATCH_MODE_META[mode];
                                                 const isActive = queueMode === mode;
                                                 const isDisabled = mode === "ranked"
@@ -606,8 +651,8 @@ export default function QueuePage() {
                                                             {mode === "ranked" && (
                                                                 <p className={`text-[11px] font-semibold ${rankedUnlocked ? "text-emerald-400" : "text-amber-400"}`}>
                                                                     {rankedUnlocked
-                                                                        ? `Rated for ${sport ? SPORTS_META[sport]?.label ?? "this sport" : "singles"}`
-                                                                        : `Unlock after 10 calibrated singles matches. Current: ${selectedSinglesRating?.matches_played ?? 0}`}
+                                                                        ? `Rated for ${sport ? (SPORTS_META[sport]?.label ?? "this sport") : "this sport"} ${formatLabel}`
+                                                                        : `Unlock after 10 calibrated ${formatLabel} matches. Current: ${selectedRating?.matches_played ?? 0}`}
                                                                 </p>
                                                             )}
                                                             {mode === "club" && (
@@ -621,9 +666,10 @@ export default function QueuePage() {
                                                     </button>
                                                 );
                                             })}
-                                        </div>
-                                    </section>
-                                ) : (
+                                    </div>
+                                </section>
+
+                                {format !== "singles" && (
                                     <section className="space-y-4">
                                         <header className="flex items-center gap-4">
                                             <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Recommended Flow</h2>
@@ -651,6 +697,12 @@ export default function QueuePage() {
                                                 <span className="flex-1 rounded-2xl border border-zinc-800 bg-zinc-950/30 px-5 py-3 text-[11px] font-bold text-zinc-500 uppercase tracking-[0.15em] text-center">
                                                     Solo assembly stays available below
                                                 </span>
+                                            </div>
+                                            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
+                                                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-300">Calibration counts here</p>
+                                                <p className="mt-1 text-xs font-semibold leading-relaxed text-emerald-100/75">
+                                                    Completed quick matches and Duo Queue matches in {selectedMeta?.label ?? "this sport"} {formatLabel} both count toward the 10-match ranked unlock.
+                                                </p>
                                             </div>
                                         </div>
                                     </section>
@@ -694,7 +746,7 @@ export default function QueuePage() {
                                     </div>
                                 </div>
 
-                                {format === "singles" && activeMode === "ranked" && !rankedUnlocked && (
+                                {activeMode === "ranked" && !rankedUnlocked && (
                                     <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 flex items-start gap-3 animate-in zoom-in-95 duration-300">
                                         <div className="mt-0.5 w-8 h-8 rounded-xl border border-amber-500/20 bg-amber-500/10 text-amber-300 flex items-center justify-center shrink-0">
                                             <IconTarget className="w-4 h-4" />
@@ -702,7 +754,7 @@ export default function QueuePage() {
                                         <div className="space-y-1">
                                             <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-300">Ranked still locked</p>
                                             <p className="text-xs font-semibold leading-relaxed text-amber-100/75">
-                                                Finish 10 calibrated singles matches for {selectedMeta?.label ?? "this sport"} before you enter ladder matchmaking.
+                                                Finish 10 calibrated {formatLabel} matches for {selectedMeta?.label ?? "this sport"} before you enter ladder matchmaking.
                                             </p>
                                         </div>
                                     </div>
@@ -731,7 +783,7 @@ export default function QueuePage() {
 
                                 <button
                                     onClick={handleJoinQueue}
-                                    disabled={loading || !sport || userSports.length === 0 || (format === "singles" && queueMode === "ranked" && !rankedUnlocked) || clubModeBlocked}
+                                    disabled={loading || !sport || userSports.length === 0 || (activeMode === "ranked" && !rankedUnlocked) || clubModeBlocked}
                                     className="relative group w-full bg-white text-zinc-950 font-black py-5 rounded-2xl transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40 shadow-2xl shadow-white/5 overflow-hidden flex items-center justify-center gap-3"
                                 >
                                     <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/0 via-cyan-500/10 to-cyan-500/0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
@@ -755,9 +807,9 @@ export default function QueuePage() {
                             <div className="flex items-center justify-between px-8 text-[10px] font-black text-zinc-600 tracking-[0.2em] uppercase">
                                 <div className="flex items-center gap-2">
                                     <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
-                                    <span>{format === "singles" ? `${selectedModeMeta.shortLabel} lane active` : "Solo doubles needs 4 players"}</span>
+                                    <span>{format === "singles" ? `${selectedModeMeta.shortLabel} lane active` : `${selectedModeMeta.shortLabel} team lane active`}</span>
                                 </div>
-                                <span>{format === "singles" ? selectedModeMeta.waitHint : "Duo Queue is faster"}</span>
+                                <span>{format === "singles" ? selectedModeMeta.waitHint : activeMode === "ranked" ? "Ranked teams only" : "Duo Queue is faster"}</span>
                             </div>
                         </div>
                     )}

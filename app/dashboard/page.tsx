@@ -120,6 +120,14 @@ function escapeRegExp(value: string) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+type InsightPayload = {
+    insight_text: string;
+    generated_at: string;
+    stats?: {
+        total_matches?: number;
+    };
+};
+
 export default function DashboardPage() {
     const router = useRouter();
     const [profile,        setProfile]        = useState<Profile | null>(null);
@@ -133,6 +141,8 @@ export default function DashboardPage() {
     const [insightDate,         setInsightDate]         = useState<string | null>(null);
     const [insightLoading,      setInsightLoading]      = useState(false);
     const [insightError,        setInsightError]        = useState("");
+    const [insightSourceMatchCount, setInsightSourceMatchCount] = useState<number | null>(null);
+    const [insightGenerationMode, setInsightGenerationMode] = useState<"auto" | "manual" | null>(null);
     const [completedMatchCount, setCompletedMatchCount] = useState(0);
     const [friends,             setFriends]             = useState<FriendSummary[]>([]);
     const [friendCount,         setFriendCount]         = useState(0);
@@ -144,7 +154,7 @@ export default function DashboardPage() {
     const [sessionReplaced, setSessionReplaced] = useState(false);
     const [offlineMatchNotice, setOfflineMatchNotice] = useState<PendingOfflineMatchNotice | null>(null);
     const [offlineNoticeState, setOfflineNoticeState] = useState<"pending" | "syncing" | "synced">("pending");
-    const autoInsightAttemptedRef = useRef(false);
+    const autoInsightAttemptedRef = useRef(0);
     const offlineSyncingRef = useRef(false);
     const offlineNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -165,18 +175,24 @@ export default function DashboardPage() {
         }
     }, []);
 
-    const applyInsight = useCallback((nextInsight: { insight_text: string; generated_at: string }) => {
+    const applyInsight = useCallback((nextInsight: InsightPayload) => {
         setInsight(nextInsight.insight_text);
         setInsightDate(nextInsight.generated_at);
+        setInsightSourceMatchCount(
+            typeof nextInsight.stats?.total_matches === "number"
+                ? nextInsight.stats.total_matches
+                : null
+        );
         setInsightError("");
     }, []);
 
-    const generateInsight = useCallback(async () => {
+    const generateInsight = useCallback(async (mode: "auto" | "manual" = "manual") => {
         const token = getAccessToken();
         if (!token || insightLoading) return false;
 
         setInsightLoading(true);
         setInsightError("");
+        setInsightGenerationMode(mode);
 
         try {
             const res = await fetch("/api/insights/generate", {
@@ -202,6 +218,7 @@ export default function DashboardPage() {
             return false;
         } finally {
             setInsightLoading(false);
+            setInsightGenerationMode(null);
         }
     }, [applyInsight, insightLoading]);
 
@@ -388,12 +405,14 @@ export default function DashboardPage() {
             completedMatchCount,
             ratings.reduce((sum, rating) => sum + rating.matches_played, 0),
         );
-        if (loading || insight || insightLoading || autoInsightAttemptedRef.current) return;
+        if (loading || insightLoading) return;
         if (knownMatchCount < MIN_MATCHES_FOR_AUTO_INSIGHT) return;
+        if (insight && (insightSourceMatchCount ?? 0) >= knownMatchCount) return;
+        if (autoInsightAttemptedRef.current >= knownMatchCount) return;
 
-        autoInsightAttemptedRef.current = true;
-        void generateInsight();
-    }, [completedMatchCount, generateInsight, insight, insightLoading, loading, ratings]);
+        autoInsightAttemptedRef.current = knownMatchCount;
+        void generateInsight("auto");
+    }, [completedMatchCount, generateInsight, insight, insightLoading, insightSourceMatchCount, loading, ratings]);
 
     async function handleLogout() {
         const token = getAccessToken();
@@ -451,6 +470,10 @@ export default function DashboardPage() {
     const winRate      = totalMatches > 0 ? Math.round((totalWins / totalMatches) * 100) : 0;
     const insightMatchCount = Math.max(completedMatchCount, totalMatches);
     const matchesNeededForInsight = Math.max(MIN_MATCHES_FOR_AUTO_INSIGHT - insightMatchCount, 0);
+    const insightIsOutdated = insight !== null && (insightSourceMatchCount ?? 0) < insightMatchCount;
+    const insightWaitMessage = insightGenerationMode === "auto"
+        ? "Wait for a few seconds while the coach analyzes your most recent matches so it can give you a more accurate read on your performance and the best areas to improve next."
+        : "Wait for a few seconds while the coach analyzes your recent matches so it can give you an accurate read on your performance and the best strategy for what to improve next.";
     const displayInsightBase = insight ? insight.trim().replace(/^[\"'“”‘’]+|[\"'“”‘’]+$/g, "") : null;
     const usernamePattern = profile?.username ? escapeRegExp(profile.username) : null;
     const displayInsight = displayInsightBase && usernamePattern
@@ -810,7 +833,7 @@ export default function DashboardPage() {
                                 <GenerateInsightButton
                                     loading={insightLoading}
                                     error={insightError}
-                                    onGenerate={generateInsight}
+                                    onGenerate={() => generateInsight("manual")}
                                 />
                             </div>
                             
@@ -828,10 +851,19 @@ export default function DashboardPage() {
                                                     <p className="text-[10px] text-zinc-600 font-bold uppercase mt-0.5">Reported on {new Date(insightDate).toLocaleDateString()}</p>
                                                 )}
                                                 {insightLoading && (
-                                                    <p className="text-[10px] text-blue-400 font-bold uppercase mt-1 tracking-widest">Generating...</p>
+                                                    <p className="text-[10px] text-blue-400 font-bold uppercase mt-1 tracking-widest">Analyzing recent matches...</p>
                                                 )}
                                             </div>
                                         </div>
+                                        {(insightLoading || insightIsOutdated) && (
+                                            <div className="rounded-2xl border border-blue-500/15 bg-blue-500/5 px-4 py-3">
+                                                <p className="text-xs font-semibold text-blue-100/90">
+                                                    {insightLoading
+                                                        ? insightWaitMessage
+                                                        : "A newer completed match was detected. Your current report is still visible while the coach prepares a fresher insight."}
+                                                </p>
+                                            </div>
+                                        )}
                                         <p className="text-zinc-300 text-lg leading-relaxed font-medium">
                                             {displayInsight}
                                         </p>
@@ -843,8 +875,8 @@ export default function DashboardPage() {
                                 </div>
                             ) : insightLoading ? (
                                 <div className="bg-zinc-900/40 border border-blue-500/10 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
-                                    <p className="text-sm text-zinc-300 font-medium">Generating your AI performance insight from your recent matches.</p>
-                                    <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">This can take a few seconds.</p>
+                                    <p className="text-sm text-zinc-300 font-medium">Your AI Performance Coach is reviewing your latest matches.</p>
+                                    <p className="text-xs text-zinc-400 font-medium max-w-md leading-relaxed">{insightWaitMessage}</p>
                                 </div>
                             ) : insightError ? (
                                 <div className="bg-zinc-900/40 border border-red-500/20 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
@@ -854,7 +886,7 @@ export default function DashboardPage() {
                             ) : insightMatchCount >= MIN_MATCHES_FOR_AUTO_INSIGHT ? (
                                 <div className="bg-zinc-900/40 border border-white/5 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
                                     <p className="text-sm text-zinc-300 font-medium">Your match data is ready for AI coaching.</p>
-                                    <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">If your report is still missing, tap Generate to refresh it now.</p>
+                                    <p className="text-xs text-zinc-400 font-medium max-w-md leading-relaxed">Your coach should start analyzing automatically. If the report is still missing after a few seconds, tap Generate to retry.</p>
                                 </div>
                             ) : (
                                 <div className="bg-zinc-900/40 border border-white/5 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
@@ -1122,7 +1154,7 @@ function GenerateInsightButton({
             disabled={loading}
             className={`text-xs hover:underline disabled:opacity-50 ${error ? "text-red-400" : "text-blue-400"}`}
         >
-            {loading ? "Generating..." : error ? "Retry Generate ->" : "Generate ->"}
+            {loading ? "Analyzing..." : error ? "Retry Generate ->" : "Generate ->"}
         </button>
     );
 }

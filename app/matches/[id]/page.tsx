@@ -523,6 +523,10 @@ export default function MatchDetailPage() {
     }
 
     // ── Assembling View ──
+    const shouldSwapSinglesSides = match.match_format === "singles" && userId === match.player2_id;
+    const leftSideName = shouldSwapSinglesSides ? name(match.player2_id) : name(match.player1_id);
+    const rightSideName = shouldSwapSinglesSides ? name(match.player1_id) : name(match.player2_id);
+
     if (match.status === "assembling") {
         return (
             <div className="min-h-screen bg-zinc-950 text-white flex flex-col">
@@ -556,6 +560,23 @@ export default function MatchDetailPage() {
         }
     }
 
+    const leftPrimaryId = shouldSwapSinglesSides ? match.player2_id : match.player1_id;
+    const leftSecondaryId = isDoubles ? match.player3_id : null;
+    const rightPrimaryId = shouldSwapSinglesSides ? match.player1_id : match.player2_id;
+    const rightSecondaryId = isDoubles ? match.player4_id : null;
+    const leftSetsWon = shouldSwapSinglesSides ? p2SetsWon : p1SetsWon;
+    const rightSetsWon = shouldSwapSinglesSides ? p1SetsWon : p2SetsWon;
+    const leftIsWinner = isCompleted && (
+        isDoubles
+            ? match.winner_id === match.player1_id || match.winner_id === match.player3_id
+            : match.winner_id === leftPrimaryId
+    );
+    const rightIsWinner = isCompleted && (
+        isDoubles
+            ? match.winner_id === match.player2_id || match.winner_id === match.player4_id
+            : match.winner_id === rightPrimaryId
+    );
+
     return (
         <div className="min-h-screen bg-zinc-950 text-white">
             <div
@@ -573,14 +594,19 @@ export default function MatchDetailPage() {
                 {/* Match header card (Scoreboard) */}
                 <MatchScoreboard 
                     match={match}
-                    sets={sets}
                     playerProfiles={playerProfiles}
-                    p1SetsWon={p1SetsWon}
-                    p2SetsWon={p2SetsWon}
                     isCompleted={isCompleted}
                     isWinner={isWinner}
-                    userId={userId}
                     isDoubles={isDoubles}
+                    leftPrimaryId={leftPrimaryId}
+                    leftSecondaryId={leftSecondaryId}
+                    rightPrimaryId={rightPrimaryId}
+                    rightSecondaryId={rightSecondaryId}
+                    leftSetsWon={leftSetsWon}
+                    rightSetsWon={rightSetsWon}
+                    leftIsWinner={leftIsWinner}
+                    rightIsWinner={rightIsWinner}
+                    onQuit={() => router.push("/dashboard")}
                 />
 
                 {/* Invalidated banner */}
@@ -627,14 +653,12 @@ export default function MatchDetailPage() {
                 {/* Sets */}
                 {sets.length > 0 && (
                     <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6">
-                        <div className="flex items-center justify-between mb-5">
+                        <div className="flex items-center justify-between gap-4 mb-5">
                             <h2 className="text-xs font-bold tracking-[0.3em] text-zinc-500 uppercase">Sets</h2>
-                            {isDoubles && (
-                                <div className="flex gap-6 text-xs text-zinc-600">
-                                    <span>Team 1</span>
-                                    <span>Team 2</span>
-                                </div>
-                            )}
+                            <div className="flex gap-6 text-xs text-zinc-600 min-w-0">
+                                <span className="max-w-24 truncate text-left">{isDoubles ? "Team 1" : leftSideName}</span>
+                                <span className="max-w-24 truncate text-right">{isDoubles ? "Team 2" : rightSideName}</span>
+                            </div>
                         </div>
                         <div className="flex flex-col gap-4">
                             {sets.map(set => (
@@ -643,20 +667,20 @@ export default function MatchDetailPage() {
                                     {canScore ? (
                                         <>
                                             <ScoreInput
-                                                value={set.player1_score}
-                                                onChange={v => handleUpdateScore(set.set_number, "player1_score", v)}
+                                                value={shouldSwapSinglesSides ? set.player2_score : set.player1_score}
+                                                onChange={v => handleUpdateScore(set.set_number, shouldSwapSinglesSides ? "player2_score" : "player1_score", v)}
                                             />
                                             <span className="text-zinc-600 font-bold">—</span>
                                             <ScoreInput
-                                                value={set.player2_score}
-                                                onChange={v => handleUpdateScore(set.set_number, "player2_score", v)}
+                                                value={shouldSwapSinglesSides ? set.player1_score : set.player2_score}
+                                                onChange={v => handleUpdateScore(set.set_number, shouldSwapSinglesSides ? "player1_score" : "player2_score", v)}
                                             />
                                         </>
                                     ) : (
                                         <>
-                                            <span className="text-2xl font-black w-12 text-center">{set.player1_score}</span>
+                                            <span className="text-2xl font-black w-12 text-center">{shouldSwapSinglesSides ? set.player2_score : set.player1_score}</span>
                                             <span className="text-zinc-600 font-bold">—</span>
-                                            <span className="text-2xl font-black w-12 text-center">{set.player2_score}</span>
+                                            <span className="text-2xl font-black w-12 text-center">{shouldSwapSinglesSides ? set.player1_score : set.player2_score}</span>
                                         </>
                                     )}
                                 </div>
@@ -813,12 +837,28 @@ export default function MatchDetailPage() {
 
                         {/* Score pill */}
                         <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-6 py-3">
-                            <span className={`text-3xl font-black tabular-nums ${setWonInfo.winner === "team1" ? "text-white" : "text-zinc-500"}`}>
-                                {setWonInfo.p1Score}
+                            <span className={`text-3xl font-black tabular-nums ${
+                                shouldSwapSinglesSides
+                                    ? setWonInfo.winner === "team2"
+                                        ? "text-white"
+                                        : "text-zinc-500"
+                                    : setWonInfo.winner === "team1"
+                                        ? "text-white"
+                                        : "text-zinc-500"
+                            }`}>
+                                {shouldSwapSinglesSides ? setWonInfo.p2Score : setWonInfo.p1Score}
                             </span>
                             <span className="text-zinc-600 font-bold text-lg">–</span>
-                            <span className={`text-3xl font-black tabular-nums ${setWonInfo.winner === "team2" ? "text-white" : "text-zinc-500"}`}>
-                                {setWonInfo.p2Score}
+                            <span className={`text-3xl font-black tabular-nums ${
+                                shouldSwapSinglesSides
+                                    ? setWonInfo.winner === "team1"
+                                        ? "text-white"
+                                        : "text-zinc-500"
+                                    : setWonInfo.winner === "team2"
+                                        ? "text-white"
+                                        : "text-zinc-500"
+                            }`}>
+                                {shouldSwapSinglesSides ? setWonInfo.p1Score : setWonInfo.p2Score}
                             </span>
                         </div>
 
@@ -1046,11 +1086,21 @@ function ScoreInput({ value, onChange }: { value: number; onChange: (v: number) 
 }
 
 function MatchScoreboard({ 
-    match, sets, playerProfiles, p1SetsWon, p2SetsWon, isCompleted, isWinner, userId, isDoubles
+    match, playerProfiles, isCompleted, isWinner, isDoubles,
+    leftPrimaryId, leftSecondaryId, rightPrimaryId, rightSecondaryId, leftSetsWon, rightSetsWon, leftIsWinner, rightIsWinner, onQuit
 }: { 
-    match: MatchData; sets: SetData[]; playerProfiles: Record<string, PlayerProfile>;
-    p1SetsWon: number; p2SetsWon: number; isCompleted: boolean; isWinner: boolean;
-    userId: string | null; isDoubles: boolean;
+    match: MatchData; playerProfiles: Record<string, PlayerProfile>;
+    isCompleted: boolean; isWinner: boolean;
+    isDoubles: boolean;
+    leftPrimaryId: string | null;
+    leftSecondaryId: string | null;
+    rightPrimaryId: string | null;
+    rightSecondaryId: string | null;
+    leftSetsWon: number;
+    rightSetsWon: number;
+    leftIsWinner: boolean;
+    rightIsWinner: boolean;
+    onQuit: () => void;
 }) {
     const meta = SPORTS_META[match.sport];
     const name = (id: string | null) => {
@@ -1087,24 +1137,24 @@ function MatchScoreboard({
                     {/* Team/Player 1 */}
                     <div className="flex-1 flex flex-col items-center gap-4 text-center">
                         <div className="flex -space-x-2">
-                            <PlayerAvatar name={name(match.player1_id)} isWinner={isCompleted && match.winner_id === match.player1_id} />
-                            {isDoubles && <PlayerAvatar name={name(match.player3_id)} isWinner={isCompleted && match.winner_id === match.player1_id} />}
+                            <PlayerAvatar name={name(leftPrimaryId)} isWinner={leftIsWinner} />
+                            {isDoubles && <PlayerAvatar name={name(leftSecondaryId)} isWinner={leftIsWinner} />}
                         </div>
                         <div className="flex flex-col gap-1">
-                            <span className="text-sm font-black text-white">{isDoubles ? "Team 1" : name(match.player1_id)}</span>
-                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase">{name(match.player1_id)} & {name(match.player3_id)}</span>}
+                            <span className="text-sm font-black text-white">{isDoubles ? "Team 1" : name(leftPrimaryId)}</span>
+                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase">{name(leftPrimaryId)} & {name(leftSecondaryId)}</span>}
                         </div>
                     </div>
 
                     {/* SCORE BOARD */}
                     <div className="flex flex-col items-center gap-2 px-6">
                         <div className="flex items-center gap-4">
-                            <span className={`text-6xl font-black tabular-nums ${isCompleted && match.winner_id === match.player1_id ? "text-white" : "text-zinc-400"}`}>
-                                {p1SetsWon}
+                            <span className={`text-6xl font-black tabular-nums ${leftIsWinner ? "text-white" : "text-zinc-400"}`}>
+                                {leftSetsWon}
                             </span>
                             <span className="text-2xl font-black text-zinc-700">:</span>
-                            <span className={`text-6xl font-black tabular-nums ${isCompleted && (isDoubles ? (match.winner_id === match.player2_id || match.winner_id === match.player4_id) : match.winner_id === match.player2_id) ? "text-white" : "text-zinc-400"}`}>
-                                {p2SetsWon}
+                            <span className={`text-6xl font-black tabular-nums ${rightIsWinner ? "text-white" : "text-zinc-400"}`}>
+                                {rightSetsWon}
                             </span>
                         </div>
                         {isCompleted ? (
@@ -1120,12 +1170,12 @@ function MatchScoreboard({
                     {/* Team/Player 2 */}
                     <div className="flex-1 flex flex-col items-center gap-4 text-center">
                         <div className="flex -space-x-2">
-                            <PlayerAvatar name={name(match.player2_id)} isWinner={isCompleted && (isDoubles ? (match.winner_id === match.player2_id || match.winner_id === match.player4_id) : match.winner_id === match.player2_id)} />
-                            {isDoubles && <PlayerAvatar name={name(match.player4_id)} isWinner={isCompleted && (isDoubles ? (match.winner_id === match.player2_id || match.winner_id === match.player4_id) : match.winner_id === match.player2_id)} />}
+                            <PlayerAvatar name={name(rightPrimaryId)} isWinner={rightIsWinner} />
+                            {isDoubles && <PlayerAvatar name={name(rightSecondaryId)} isWinner={rightIsWinner} />}
                         </div>
                         <div className="flex flex-col gap-1">
-                            <span className="text-sm font-black text-white">{isDoubles ? "Team 2" : name(match.player2_id)}</span>
-                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase">{name(match.player2_id)} & {name(match.player4_id)}</span>}
+                            <span className="text-sm font-black text-white">{isDoubles ? "Team 2" : name(rightPrimaryId)}</span>
+                            {isDoubles && <span className="text-[10px] text-zinc-500 font-bold uppercase">{name(rightPrimaryId)} & {name(rightSecondaryId)}</span>}
                         </div>
                     </div>
                 </div>
@@ -1143,6 +1193,12 @@ function MatchScoreboard({
                         <p className="text-[10px] font-bold mt-1 opacity-60">
                             {isWinner ? "You earned rating points for this win!" : "Better luck in your next match!"}
                         </p>
+                        <button
+                            onClick={onQuit}
+                            className="mt-4 inline-flex items-center justify-center rounded-xl border border-white/10 bg-white/5 px-5 py-2.5 text-xs font-black uppercase tracking-widest text-white transition-colors hover:bg-white/10"
+                        >
+                            Quit
+                        </button>
                     </div>
                 )}
             </div>

@@ -1,10 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
+import {
+    clearPendingOfflineMatchNotice,
+    dispatchOfflineQueuedAction,
+    listOfflineQueueKeys,
+    OFFLINE_QUEUE_PREFIX,
+    readOfflineQueue,
+    readPendingOfflineMatchNotice,
+    type PendingOfflineMatchNotice,
+    writeOfflineQueue,
+} from "@/lib/offline-match";
 import NavBar from "@/components/NavBar";
 
 const SPORTS_META: Record<string, { label: string; emoji: string; color: string; bg: string; border: string; glow: string }> = {
@@ -44,6 +54,17 @@ interface Profile {
     first_name: string;
     last_name: string;
     avatar_url: string | null;
+}
+
+interface FriendSummary {
+    friendship_id: string;
+    since: string;
+    id: string;
+    username: string;
+    first_name: string;
+    last_name: string;
+    avatar_url: string | null;
+    is_online: boolean;
 }
 
 interface Rating {
@@ -92,6 +113,13 @@ const COMP_LEVEL_COLORS: Record<string, { color: string; bg: string; border: str
     "National":       { color: "text-slate-200",  bg: "bg-slate-500/10",  border: "border-slate-500/20" },
 };
 
+const OFFLINE_SYNC_NOTICE_MS = 5000;
+const MIN_MATCHES_FOR_AUTO_INSIGHT = 3;
+
+function escapeRegExp(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export default function DashboardPage() {
     const router = useRouter();
     const [profile,        setProfile]        = useState<Profile | null>(null);
@@ -103,6 +131,10 @@ export default function DashboardPage() {
     const [refInviteCount,      setRefInviteCount]      = useState(0);
     const [insight,             setInsight]             = useState<string | null>(null);
     const [insightDate,         setInsightDate]         = useState<string | null>(null);
+    const [insightLoading,      setInsightLoading]      = useState(false);
+    const [insightError,        setInsightError]        = useState("");
+    const [completedMatchCount, setCompletedMatchCount] = useState(0);
+    const [friends,             setFriends]             = useState<FriendSummary[]>([]);
     const [friendCount,         setFriendCount]         = useState(0);
     const [friendRequests,      setFriendRequests]      = useState(0);
     const [pendingMatchCount,   setPendingMatchCount]   = useState(0);
@@ -110,6 +142,11 @@ export default function DashboardPage() {
     const [pendingClubRequests, setPendingClubRequests] = useState(0);
     const [loading,             setLoading]             = useState(true);
     const [sessionReplaced, setSessionReplaced] = useState(false);
+    const [offlineMatchNotice, setOfflineMatchNotice] = useState<PendingOfflineMatchNotice | null>(null);
+    const [offlineNoticeState, setOfflineNoticeState] = useState<"pending" | "syncing" | "synced">("pending");
+    const autoInsightAttemptedRef = useRef(false);
+    const offlineSyncingRef = useRef(false);
+    const offlineNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Show a one-time notice if this login replaced another active session
     useEffect(() => {
@@ -120,6 +157,149 @@ export default function DashboardPage() {
             setTimeout(() => setSessionReplaced(false), 8000);
         }
     }, []);
+
+    const clearOfflineNoticeTimer = useCallback(() => {
+        if (offlineNoticeTimerRef.current) {
+            clearTimeout(offlineNoticeTimerRef.current);
+            offlineNoticeTimerRef.current = null;
+        }
+    }, []);
+
+    const applyInsight = useCallback((nextInsight: { insight_text: string; generated_at: string }) => {
+        setInsight(nextInsight.insight_text);
+        setInsightDate(nextInsight.generated_at);
+        setInsightError("");
+    }, []);
+
+    const generateInsight = useCallback(async () => {
+        const token = getAccessToken();
+        if (!token || insightLoading) return false;
+
+        setInsightLoading(true);
+        setInsightError("");
+
+        try {
+            const res = await fetch("/api/insights/generate", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await res.json().catch(() => null);
+
+            if (!res.ok) {
+                setInsightError(data?.detail || data?.error || "Failed to generate AI insight.");
+                return false;
+            }
+
+            if (data?.insight_text && data?.generated_at) {
+                applyInsight(data);
+                return true;
+            }
+
+            setInsightError("AI insight was generated, but no insight text was returned.");
+            return false;
+        } catch {
+            setInsightError("Could not generate AI insight right now.");
+            return false;
+        } finally {
+            setInsightLoading(false);
+        }
+    }, [applyInsight, insightLoading]);
+
+    const syncOfflineMatchQueues = useCallback(async () => {
+        const token = getAccessToken();
+        if (!token || offlineSyncingRef.current) return;
+        if (typeof window === "undefined") return;
+
+        const queueKeys = listOfflineQueueKeys(localStorage);
+        if (!queueKeys.length) {
+            clearPendingOfflineMatchNotice(sessionStorage);
+            setOfflineMatchNotice(null);
+            return;
+        }
+
+        offlineSyncingRef.current = true;
+        setOfflineNoticeState("syncing");
+
+        let allSynced = true;
+
+        for (const key of queueKeys) {
+            const matchId = key.slice(OFFLINE_QUEUE_PREFIX.length);
+            let queue = readOfflineQueue(localStorage, matchId);
+
+            if (!queue.length) {
+                writeOfflineQueue(localStorage, matchId, []);
+                continue;
+            }
+
+            for (const action of [...queue]) {
+                try {
+                    const res = await dispatchOfflineQueuedAction(matchId, action, token);
+                    if (res.ok || (res.status >= 400 && res.status < 500)) {
+                        queue = queue.filter(item => item.qid !== action.qid);
+                        writeOfflineQueue(localStorage, matchId, queue);
+                    } else {
+                        allSynced = false;
+                        break;
+                    }
+                } catch {
+                    allSynced = false;
+                    break;
+                }
+            }
+
+            if (!allSynced) break;
+        }
+
+        offlineSyncingRef.current = false;
+
+        if (allSynced) {
+            clearPendingOfflineMatchNotice(sessionStorage);
+            clearOfflineNoticeTimer();
+            setOfflineNoticeState("synced");
+            offlineNoticeTimerRef.current = setTimeout(() => {
+                setOfflineMatchNotice(null);
+                offlineNoticeTimerRef.current = null;
+            }, OFFLINE_SYNC_NOTICE_MS);
+        } else {
+            setOfflineNoticeState("pending");
+        }
+    }, [clearOfflineNoticeTimer]);
+
+    useEffect(() => {
+        const notice = readPendingOfflineMatchNotice(sessionStorage);
+        if (notice) {
+            setOfflineMatchNotice(notice);
+            setOfflineNoticeState(navigator.onLine ? "syncing" : "pending");
+            if (navigator.onLine) syncOfflineMatchQueues();
+        } else if (navigator.onLine && listOfflineQueueKeys(localStorage).length > 0) {
+            syncOfflineMatchQueues();
+        }
+
+        function handleOnline() {
+            const nextNotice = readPendingOfflineMatchNotice(sessionStorage);
+            if (nextNotice) setOfflineMatchNotice(nextNotice);
+            if (nextNotice || listOfflineQueueKeys(localStorage).length > 0) {
+                syncOfflineMatchQueues();
+            }
+        }
+
+        function handleOffline() {
+            const nextNotice = readPendingOfflineMatchNotice(sessionStorage);
+            if (nextNotice) {
+                clearOfflineNoticeTimer();
+                setOfflineMatchNotice(nextNotice);
+                setOfflineNoticeState("pending");
+            }
+        }
+
+        window.addEventListener("online", handleOnline);
+        window.addEventListener("offline", handleOffline);
+        return () => {
+            window.removeEventListener("online", handleOnline);
+            window.removeEventListener("offline", handleOffline);
+            clearOfflineNoticeTimer();
+        };
+    }, [clearOfflineNoticeTimer, syncOfflineMatchQueues]);
 
     useEffect(() => {
         const token = getAccessToken();
@@ -163,12 +343,12 @@ export default function DashboardPage() {
             if (insightRes.ok) {
                 const data = await insightRes.json();
                 if (data.insight) {
-                    setInsight(data.insight.insight_text);
-                    setInsightDate(data.insight.generated_at);
+                    applyInsight(data.insight);
                 }
             }
             if (friendsRes.ok) {
                 const data = await friendsRes.json();
+                setFriends(data.friends ?? []);
                 setFriendCount(data.count ?? 0);
             }
             if (friendReqRes.ok) {
@@ -181,9 +361,13 @@ export default function DashboardPage() {
             }
             if (matchesRes.ok) {
                 const data = await matchesRes.json();
+                const completed = (data.matches ?? []).filter(
+                    (m: { status: string }) => m.status === "completed"
+                );
                 const pending = (data.matches ?? []).filter(
                     (m: { status: string }) => m.status === "pending_approval" || m.status === "pending"
                 );
+                setCompletedMatchCount(completed.length);
                 setPendingMatchCount(pending.length);
             }
             if (tournInviteRes.ok) {
@@ -197,7 +381,19 @@ export default function DashboardPage() {
         })
         .catch(() => {})
         .finally(() => setLoading(false));
-    }, [router]);
+    }, [applyInsight, router]);
+
+    useEffect(() => {
+        const knownMatchCount = Math.max(
+            completedMatchCount,
+            ratings.reduce((sum, rating) => sum + rating.matches_played, 0),
+        );
+        if (loading || insight || insightLoading || autoInsightAttemptedRef.current) return;
+        if (knownMatchCount < MIN_MATCHES_FOR_AUTO_INSIGHT) return;
+
+        autoInsightAttemptedRef.current = true;
+        void generateInsight();
+    }, [completedMatchCount, generateInsight, insight, insightLoading, loading, ratings]);
 
     async function handleLogout() {
         const token = getAccessToken();
@@ -253,6 +449,22 @@ export default function DashboardPage() {
     const totalWins    = ratings.reduce((sum, r) => sum + r.wins, 0);
     const totalLosses  = ratings.reduce((sum, r) => sum + r.losses, 0);
     const winRate      = totalMatches > 0 ? Math.round((totalWins / totalMatches) * 100) : 0;
+    const insightMatchCount = Math.max(completedMatchCount, totalMatches);
+    const matchesNeededForInsight = Math.max(MIN_MATCHES_FOR_AUTO_INSIGHT - insightMatchCount, 0);
+    const displayInsightBase = insight ? insight.trim().replace(/^[\"'“”‘’]+|[\"'“”‘’]+$/g, "") : null;
+    const usernamePattern = profile?.username ? escapeRegExp(profile.username) : null;
+    const displayInsight = displayInsightBase && usernamePattern
+        ? displayInsightBase
+            .replace(new RegExp(`^@?${usernamePattern}\\s+demonstrates\\b`, "i"), "You demonstrate")
+            .replace(new RegExp(`^@?${usernamePattern}\\s+has\\b`, "i"), "You have")
+            .replace(new RegExp(`^@?${usernamePattern}\\s+have\\b`, "i"), "You have")
+            .replace(new RegExp(`^@?${usernamePattern}\\s+are\\b`, "i"), "You are")
+            .replace(new RegExp(`^@?${usernamePattern}\\s+need(?:s)?\\b`, "i"), "You need")
+            .replace(new RegExp(`^@?${usernamePattern}\\s+should\\b`, "i"), "You should")
+            .replace(new RegExp(`^@?${usernamePattern}\\s+can\\b`, "i"), "You can")
+        : displayInsightBase;
+    const onlineFriends = friends.filter((friend) => friend.is_online);
+    const onlinePreview = onlineFriends.slice(0, 3);
 
     return (
         <div className="min-h-screen bg-zinc-950 text-white selection:bg-blue-500/30">
@@ -295,6 +507,70 @@ export default function DashboardPage() {
                             </p>
                         </div>
                         <button onClick={() => setSessionReplaced(false)} className="text-yellow-500/50 hover:text-yellow-200 transition-colors">✕</button>
+                    </div>
+                </div>
+            )}
+
+            {offlineMatchNotice && (
+                <div className="fixed inset-x-0 top-20 z-30 px-4 pointer-events-none">
+                    <div className={`mx-auto w-full max-w-md rounded-3xl border shadow-2xl backdrop-blur-md px-5 py-4 pointer-events-auto ${
+                        offlineNoticeState === "pending"
+                            ? "border-orange-500/30 bg-zinc-950/95"
+                            : offlineNoticeState === "syncing"
+                                ? "border-blue-500/30 bg-zinc-950/95"
+                                : "border-emerald-500/30 bg-zinc-950/95"
+                    }`}>
+                        <div className="flex items-start gap-3">
+                            <div className={`mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl ${
+                                offlineNoticeState === "pending"
+                                    ? "bg-orange-500/15 text-orange-300"
+                                    : offlineNoticeState === "syncing"
+                                        ? "bg-blue-500/15 text-blue-300"
+                                        : "bg-emerald-500/15 text-emerald-300"
+                            }`}>
+                                {offlineNoticeState === "pending" ? "📶" : offlineNoticeState === "syncing" ? "↻" : "✓"}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                                <p className={`text-sm font-black leading-tight ${
+                                    offlineNoticeState === "pending"
+                                        ? "text-orange-300"
+                                        : offlineNoticeState === "syncing"
+                                            ? "text-blue-300"
+                                            : "text-emerald-300"
+                                }`}>
+                                    {offlineNoticeState === "pending"
+                                        ? "Last Match Saved Offline"
+                                        : offlineNoticeState === "syncing"
+                                            ? "Back to Online"
+                                            : "Last Match Synced"}
+                                </p>
+                                <p className="mt-1 text-sm text-zinc-300">
+                                    {offlineNoticeState === "pending"
+                                        ? offlineMatchNotice.message
+                                        : offlineNoticeState === "syncing"
+                                            ? "Wait for a moment while we sync your saved match to the server."
+                                            : "Your last offline match is now saved online."}
+                                </p>
+                                <p className="mt-2 text-[11px] uppercase tracking-[0.2em] text-zinc-500">
+                                    {offlineMatchNotice.sport.replace("_", " ")} match
+                                </p>
+                            </div>
+                        </div>
+
+                        {offlineNoticeState === "syncing" && (
+                            <div className="mt-4 h-1 w-full overflow-hidden rounded-full bg-white/5">
+                                <div className="h-full w-3/5 rounded-full bg-blue-500/70 animate-pulse" />
+                            </div>
+                        )}
+
+                        {offlineNoticeState === "synced" && (
+                            <div className="mt-4 h-0.5 w-full overflow-hidden rounded-full bg-white/5">
+                                <div
+                                    className="h-full rounded-full bg-emerald-500/70"
+                                    style={{ animation: `shrink ${OFFLINE_SYNC_NOTICE_MS}ms linear forwards` }}
+                                />
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -531,7 +807,11 @@ export default function DashboardPage() {
                                     <span className="w-8 h-px bg-zinc-800" />
                                     AI Insights
                                 </h2>
-                                <GenerateInsightButton />
+                                <GenerateInsightButton
+                                    loading={insightLoading}
+                                    error={insightError}
+                                    onGenerate={generateInsight}
+                                />
                             </div>
                             
                             {insight ? (
@@ -547,10 +827,13 @@ export default function DashboardPage() {
                                                 {insightDate && (
                                                     <p className="text-[10px] text-zinc-600 font-bold uppercase mt-0.5">Reported on {new Date(insightDate).toLocaleDateString()}</p>
                                                 )}
+                                                {insightLoading && (
+                                                    <p className="text-[10px] text-blue-400 font-bold uppercase mt-1 tracking-widest">Generating...</p>
+                                                )}
                                             </div>
                                         </div>
                                         <p className="text-zinc-300 text-lg leading-relaxed font-medium">
-                                            &ldquo;{insight}&rdquo;
+                                            {displayInsight}
                                         </p>
                                         <div className="flex items-center gap-4 pt-6 border-t border-white/5">
                                             <div className="px-3 py-1 bg-white/5 rounded-full text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Strategy</div>
@@ -558,10 +841,27 @@ export default function DashboardPage() {
                                         </div>
                                     </div>
                                 </div>
+                            ) : insightLoading ? (
+                                <div className="bg-zinc-900/40 border border-blue-500/10 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
+                                    <p className="text-sm text-zinc-300 font-medium">Generating your AI performance insight from your recent matches.</p>
+                                    <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">This can take a few seconds.</p>
+                                </div>
+                            ) : insightError ? (
+                                <div className="bg-zinc-900/40 border border-red-500/20 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
+                                    <p className="text-sm text-red-300 font-medium">We could not generate your AI insight automatically.</p>
+                                    <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">{insightError}</p>
+                                </div>
+                            ) : insightMatchCount >= MIN_MATCHES_FOR_AUTO_INSIGHT ? (
+                                <div className="bg-zinc-900/40 border border-white/5 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
+                                    <p className="text-sm text-zinc-300 font-medium">Your match data is ready for AI coaching.</p>
+                                    <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">If your report is still missing, tap Generate to refresh it now.</p>
+                                </div>
                             ) : (
                                 <div className="bg-zinc-900/40 border border-white/5 rounded-2xl p-8 flex flex-col items-center gap-3 text-center">
                                     <p className="text-sm text-zinc-500 font-medium">Your coach is waiting for more match data.</p>
-                                    <p className="text-[10px] text-zinc-600 uppercase font-bold tracking-widest">Play at least 3 matches to unlock insights.</p>
+                                    <p className="text-[10px] text-zinc-600 uppercase font-bold tracking-widest">
+                                        Complete {matchesNeededForInsight} more match{matchesNeededForInsight === 1 ? "" : "es"} to unlock insights.
+                                    </p>
                                 </div>
                             )}
                         </section>
@@ -619,9 +919,33 @@ export default function DashboardPage() {
                             <div className="space-y-3">
                                 <Link href="/friends" className="bg-zinc-900/40 border border-white/5 hover:border-blue-500/20 rounded-2xl p-4 flex items-center gap-4 transition-all group">
                                     <div className="w-10 h-10 bg-blue-500/10 rounded-xl flex items-center justify-center text-xl group-hover:scale-110 transition-transform">👥</div>
-                                    <div>
+                                    <div className="min-w-0 flex-1">
                                         <span className="font-black text-sm block">{friendCount} Friend{friendCount === 1 ? "" : "s"}</span>
-                                        <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Manage Circle</span>
+                                        <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">
+                                            {onlineFriends.length > 0 ? `${onlineFriends.length} online now` : "Manage Circle"}
+                                        </span>
+                                        {onlinePreview.length > 0 && (
+                                            <div className="mt-3 flex items-center gap-2 min-w-0">
+                                                <div className="flex -space-x-2 shrink-0">
+                                                    {onlinePreview.map((friend) => (
+                                                        <div key={friend.id} className="relative">
+                                                            <UserAvatar
+                                                                first_name={friend.first_name}
+                                                                last_name={friend.last_name}
+                                                                username={friend.username}
+                                                                avatar_url={friend.avatar_url}
+                                                                size="sm"
+                                                            />
+                                                            <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-zinc-900 bg-emerald-500" />
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <span className="truncate text-[10px] font-bold uppercase tracking-widest text-emerald-400">
+                                                    {onlinePreview.map((friend) => friend.first_name || friend.username).join(", ")}
+                                                    {onlineFriends.length > onlinePreview.length ? ` +${onlineFriends.length - onlinePreview.length}` : ""}
+                                                </span>
+                                            </div>
+                                        )}
                                     </div>
                                 </Link>
                                 <Link href="/friends/nearby" className="bg-zinc-900/40 border border-white/5 hover:border-emerald-500/20 rounded-2xl p-4 flex items-center gap-4 transition-all group">
@@ -783,37 +1107,22 @@ function ProfileMenu({ username, avatarUrl, firstName, lastName, onLogout }: {
     );
 }
 
-function GenerateInsightButton() {
-    const [loading, setLoading] = useState(false);
-    const [done,    setDone]    = useState(false);
-    const [err,     setErr]     = useState("");
-
-    async function handle() {
-        const token = getAccessToken();
-        if (!token) return;
-        setLoading(true); setErr("");
-        try {
-            const res = await fetch("/api/insights/generate", {
-                method: "POST",
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (res.ok) { setDone(true); window.location.reload(); }
-            else { const d = await res.json(); setErr(d.detail || "Failed."); }
-        } catch { setErr("Connection error."); }
-        finally { setLoading(false); }
-    }
-
-    if (err) return <span className="text-xs text-red-400">{err}</span>;
-    if (done) return <span className="text-xs text-green-400">Generated!</span>;
-
+function GenerateInsightButton({
+    loading,
+    error,
+    onGenerate,
+}: {
+    loading: boolean;
+    error: string;
+    onGenerate: () => Promise<boolean>;
+}) {
     return (
         <button
-            onClick={handle}
+            onClick={() => { void onGenerate(); }}
             disabled={loading}
-            className="text-xs text-blue-400 hover:underline disabled:opacity-50"
+            className={`text-xs hover:underline disabled:opacity-50 ${error ? "text-red-400" : "text-blue-400"}`}
         >
-            {loading ? "Generating…" : "Generate →"}
+            {loading ? "Generating..." : error ? "Retry Generate ->" : "Generate ->"}
         </button>
     );
 }
-

@@ -3,6 +3,12 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
+import {
+    dispatchOfflineQueuedAction,
+    getOfflineQueueKey,
+    type OfflineQueuedAction as QueuedAction,
+    writePendingOfflineMatchNotice,
+} from "@/lib/offline-match";
 import NavBar from "@/components/NavBar";
 
 // ── Scoring causes per sport ──────────────────────────────────────────────────
@@ -89,13 +95,7 @@ type ModalState =
     | { type: "lost_serve" }
     | { type: "violation" };
 
-interface QueuedAction {
-    qid: string;
-    type: "point" | "serve_change" | "violation" | "undo";
-    payload: object;
-    localTeam?: "team1" | "team2";
-    localSet?: number;
-}
+const RECONNECT_NOTICE_MS = 5000;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -168,6 +168,10 @@ export default function RefereeConsolePage() {
     const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const statusRef    = useRef("ongoing");
     const syncingRef   = useRef(false);
+    const connPhaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const offlineSetHandledRef = useRef<Set<number>>(new Set());
+    const offlineCompletionHandledRef = useRef(false);
+    const setWonTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const [isOnline,     setIsOnline]     = useState(true);
     const [offlineQueue, setOfflineQueue] = useState<QueuedAction[]>([]);
@@ -198,11 +202,63 @@ export default function RefereeConsolePage() {
 
     // ── Offline queue helpers ──────────────────────────────────────────────────
 
-    function offlineKey() { return `isms_offline_${matchId}`; }
+    const queueStorageKey = getOfflineQueueKey(matchId);
 
-    function saveQueue(q: QueuedAction[]) {
-        try { localStorage.setItem(offlineKey(), JSON.stringify(q)); } catch {}
+    const saveQueue = useCallback((q: QueuedAction[]) => {
+        try { localStorage.setItem(queueStorageKey, JSON.stringify(q)); } catch {}
+    }, [queueStorageKey]);
+
+    function clearConnPhaseTimer() {
+        if (connPhaseTimerRef.current) {
+            clearTimeout(connPhaseTimerRef.current);
+            connPhaseTimerRef.current = null;
+        }
     }
+
+    function scheduleConnPhaseReset(delayMs: number = RECONNECT_NOTICE_MS) {
+        clearConnPhaseTimer();
+        connPhaseTimerRef.current = setTimeout(() => {
+            setConnPhase("online");
+            connPhaseTimerRef.current = null;
+        }, delayMs);
+    }
+
+    const finalizeMatchOffline = useCallback((winnerTeam: "team1" | "team2") => {
+        if (!match || offlineCompletionHandledRef.current) return;
+        const winnerId = winnerTeam === "team1" ? match.player1_id : match.player2_id;
+        if (!winnerId) return;
+
+        offlineCompletionHandledRef.current = true;
+        setModal({ type: "none" });
+        setShowEnd(false);
+        setEndWinner(winnerTeam);
+
+        const qid = crypto.randomUUID();
+        const completionAction: QueuedAction = {
+            qid,
+            type: "complete",
+            payload: { winner_id: winnerId, client_action_id: qid },
+        };
+
+        setOfflineQueue(prev => {
+            const next = prev.some(action => action.type === "complete")
+                ? prev
+                : [...prev, completionAction];
+            saveQueue(next);
+            return next;
+        });
+
+        writePendingOfflineMatchNotice(sessionStorage, {
+            matchId,
+            sport: match.sport,
+            winnerTeam,
+            savedAt: new Date().toISOString(),
+            message: "Your last match has been saved locally. We are waiting for the internet to come back so we can save it online.",
+        });
+
+        setMatch(prev => prev ? { ...prev, status: "completed" } : prev);
+        router.replace("/dashboard");
+    }, [match, matchId, router, saveQueue]);
 
     function applyPointLocally(team: "team1" | "team2", setNum: number) {
         setSets(prev => prev.map(s => {
@@ -228,39 +284,48 @@ export default function RefereeConsolePage() {
         if (navigator.vibrate) navigator.vibrate([20, 30]);
     }
 
+    const getSetScores = useCallback((set: SetData) => {
+        return {
+            team1: set.team1_score ?? set.player1_score ?? 0,
+            team2: set.team2_score ?? set.player2_score ?? 0,
+        };
+    }, []);
+
+    const getSetWinner = useCallback((set: SetData): "team1" | "team2" | null => {
+        const { team1, team2 } = getSetScores(set);
+        const target = scoreLimit ?? ruleset?.points_per_set ?? ruleset?.games_per_set ?? 21;
+        const winBy = ruleset?.win_by ?? 2;
+        const maxPoints = ruleset?.max_points ?? null;
+        const effectiveMax = maxPoints && maxPoints > target ? maxPoints : null;
+
+        if (team1 >= target && team1 - team2 >= winBy) return "team1";
+        if (team2 >= target && team2 - team1 >= winBy) return "team2";
+        if (effectiveMax && (team1 >= effectiveMax || team2 >= effectiveMax)) return team1 > team2 ? "team1" : "team2";
+        return null;
+    }, [getSetScores, ruleset, scoreLimit]);
+
+    const getSetsWon = useCallback((allSets: SetData[]) => {
+        return allSets.reduce(
+            (acc, set) => {
+                const winner = getSetWinner(set);
+                if (winner === "team1") acc.team1 += 1;
+                if (winner === "team2") acc.team2 += 1;
+                return acc;
+            },
+            { team1: 0, team2: 0 }
+        );
+    }, [getSetWinner]);
+
     async function syncQueue(queue: QueuedAction[], token: string) {
         if (!queue.length || syncingRef.current) return;
+        clearConnPhaseTimer();
         syncingRef.current = true;
         setSyncing(true);
         setConnPhase("syncing");
         let remaining = [...queue];
         for (const action of queue) {
             try {
-                let res: Response;
-                if (action.type === "point") {
-                    res = await fetch(`/api/matches/${matchId}/point`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                        body: JSON.stringify(action.payload),
-                    });
-                } else if (action.type === "serve_change") {
-                    res = await fetch(`/api/matches/${matchId}/serve-change`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                        body: JSON.stringify(action.payload),
-                    });
-                } else if (action.type === "violation") {
-                    res = await fetch(`/api/matches/${matchId}/violation`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                        body: JSON.stringify(action.payload),
-                    });
-                } else {
-                    res = await fetch(`/api/matches/${matchId}/undo`, {
-                        method: "POST",
-                        headers: { Authorization: `Bearer ${token}` },
-                    });
-                }
+                const res = await dispatchOfflineQueuedAction(matchId, action, token);
                 if (res.ok) {
                     remaining = remaining.filter(a => a.qid !== action.qid);
                     setOfflineQueue(remaining);
@@ -289,9 +354,10 @@ export default function RefereeConsolePage() {
         setSyncing(false);
         if (remaining.length === 0) {
             setConnPhase("synced");
-            setTimeout(() => setConnPhase("online"), 2500);
+            scheduleConnPhaseReset();
             fetchAll(token);
         } else {
+            clearConnPhaseTimer();
             setConnPhase("online");
         }
     }
@@ -359,7 +425,7 @@ export default function RefereeConsolePage() {
         } catch (err) {
             console.error("[referee] fetchAll error:", err);
         }
-    }, [matchId]);
+    }, [matchId, router]);
 
     useEffect(() => {
         const token = getAccessToken();
@@ -371,7 +437,7 @@ export default function RefereeConsolePage() {
             .then(d => { if (d) setUserId(d.profile?.id ?? null); });
 
         fetchAll(token).finally(() => setLoading(false));
-    }, [fetchAll]);
+    }, [fetchAll, router]);
 
     // ── WebSocket ──────────────────────────────────────────────────────────────
 
@@ -389,16 +455,21 @@ export default function RefereeConsolePage() {
                 try {
                     const d = JSON.parse(event.data) as Record<string, unknown>;
                     if (d.type === "sets_update" && Array.isArray(d.sets)) {
-                        setSets(d.sets as SetData[]);
+                        const nextSetNumber = typeof d.next_set === "number" ? d.next_set as number : null;
+                        const updatedSets = (d.sets as SetData[]).map(set => (
+                            d.set_winner && nextSetNumber !== null && set.set_number === nextSetNumber
+                                ? { ...set, player1_score: 0, player2_score: 0, team1_score: 0, team2_score: 0 }
+                                : set
+                        ));
+                        setSets(updatedSets);
                         // Auto-advance to next set if one was created
-                        if (typeof d.next_set === "number") {
-                            setActiveSet(d.next_set as number);
+                        if (nextSetNumber !== null) {
+                            setActiveSet(nextSetNumber);
                         }
                         // Show set won modal
                         if (d.set_winner) {
                             const wonSet = d.set_number_won as number;
-                            const updatedSets = d.sets as { set_number: number; player1_score: number; player2_score: number }[] | undefined;
-                            const finishedSet = updatedSets?.find(s => s.set_number === wonSet);
+                            const finishedSet = updatedSets.find(s => s.set_number === wonSet);
                             setSetWonInfo({
                                 setNumber: wonSet,
                                 winner: d.set_winner as "team1" | "team2",
@@ -440,6 +511,71 @@ export default function RefereeConsolePage() {
         };
     }, [matchId]);
 
+    useEffect(() => {
+        offlineSetHandledRef.current.clear();
+        offlineCompletionHandledRef.current = false;
+
+        if (setWonTimerRef.current) {
+            clearTimeout(setWonTimerRef.current);
+            setWonTimerRef.current = null;
+        }
+
+        return () => {
+            if (setWonTimerRef.current) {
+                clearTimeout(setWonTimerRef.current);
+                setWonTimerRef.current = null;
+            }
+        };
+    }, [matchId]);
+
+    useEffect(() => {
+        if (isOnline || !match || !ruleset || match.status !== "ongoing" || sets.length === 0) return;
+
+        const current = sets.find(s => s.set_number === activeSet) ?? sets[sets.length - 1];
+        if (!current) return;
+
+        const setWinner = getSetWinner(current);
+        if (!setWinner) return;
+
+        if (!offlineSetHandledRef.current.has(current.set_number)) {
+            offlineSetHandledRef.current.add(current.set_number);
+            const scores = getSetScores(current);
+            setSetWonInfo({
+                setNumber: current.set_number,
+                winner: setWinner,
+                p1Score: scores.team1,
+                p2Score: scores.team2,
+            });
+            if (setWonTimerRef.current) clearTimeout(setWonTimerRef.current);
+            setWonTimerRef.current = setTimeout(() => {
+                setSetWonInfo(null);
+                setWonTimerRef.current = null;
+            }, 4000);
+        }
+
+        const wins = getSetsWon(sets);
+        const matchWinner =
+            wins.team1 >= ruleset.sets_to_win ? "team1"
+            : wins.team2 >= ruleset.sets_to_win ? "team2"
+            : null;
+
+        if (matchWinner) {
+            finalizeMatchOffline(matchWinner);
+            return;
+        }
+
+        const nextSetNumber = current.set_number + 1;
+        const atMaxSets = sets.length >= ruleset.max_sets;
+        const nextSetExists = sets.some(set => set.set_number === nextSetNumber);
+        if (!atMaxSets && !nextSetExists) {
+            setSets(prev => [
+                ...prev,
+                { set_number: nextSetNumber, player1_score: 0, player2_score: 0, team1_score: 0, team2_score: 0 },
+            ]);
+            setActiveSet(nextSetNumber);
+        }
+    }, [activeSet, finalizeMatchOffline, getSetScores, getSetWinner, getSetsWon, isOnline, match, ruleset, sets]);
+
     useEffect(() => { if (match?.status) statusRef.current = match.status; }, [match?.status]);
 
     // ── Online / offline resilience ────────────────────────────────────────────
@@ -457,17 +593,18 @@ export default function RefereeConsolePage() {
     useEffect(() => {
         setIsOnline(navigator.onLine);
         try {
-            const raw: QueuedAction[] = JSON.parse(localStorage.getItem(`isms_offline_${matchId}`) ?? "[]");
+            const raw: QueuedAction[] = JSON.parse(localStorage.getItem(queueStorageKey) ?? "[]");
             const stored = migrateQueue(raw);
             if (stored.length) { setOfflineQueue(stored); saveQueue(stored); }
         } catch {}
 
         function handleOnline() {
             setIsOnline(true);
+            clearConnPhaseTimer();
             const token = getAccessToken();
             if (!token) return;
             try {
-                const raw: QueuedAction[] = JSON.parse(localStorage.getItem(`isms_offline_${matchId}`) ?? "[]");
+                const raw: QueuedAction[] = JSON.parse(localStorage.getItem(queueStorageKey) ?? "[]");
                 const stored = migrateQueue(raw);
                 if (stored.length) {
                     syncQueue(stored, token);
@@ -480,6 +617,7 @@ export default function RefereeConsolePage() {
         }
         function handleOffline() {
             setIsOnline(false);
+            clearConnPhaseTimer();
             setConnPhase("offline");
         }
 
@@ -488,6 +626,7 @@ export default function RefereeConsolePage() {
         return () => {
             window.removeEventListener("online", handleOnline);
             window.removeEventListener("offline", handleOffline);
+            clearConnPhaseTimer();
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [matchId]);
@@ -766,6 +905,7 @@ export default function RefereeConsolePage() {
             const action: QueuedAction = { qid, type: "violation", payload };
             const q = [...offlineQueue, action];
             setOfflineQueue(q); saveQueue(q);
+            if (violAward) applyPointLocally(violAward, activeSet);
             return;
         }
 
@@ -780,6 +920,7 @@ export default function RefereeConsolePage() {
             const action: QueuedAction = { qid, type: "violation", payload };
             const q = [...offlineQueue, action];
             setOfflineQueue(q); saveQueue(q);
+            if (violAward) applyPointLocally(violAward, activeSet);
             setIsOnline(false); setConnPhase("offline");
         }
     }
@@ -826,7 +967,9 @@ export default function RefereeConsolePage() {
                 body: JSON.stringify({ winner_id: winnerId }),
             });
             if (res.ok) {
-                router.push(`/matches/${matchId}`);
+                setShowEnd(false);
+                setEndWinner("");
+                setMatch(prev => prev ? { ...prev, status: "completed" } : prev);
             } else {
                 const d = await res.json();
                 setError(d.detail || "Failed to end match.");
@@ -853,35 +996,59 @@ export default function RefereeConsolePage() {
         finally { setLeaveLoading(false); setShowLeaveConfirm(false); }
     }
 
+    function viewMatchResults() {
+        router.push(`/matches/${matchId}`);
+    }
+
+    function exitConsole() {
+        router.push("/referee");
+    }
+
     // ── Guards ─────────────────────────────────────────────────────────────────
 
     if (loading) return (
-        <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
+        <div className="min-h-[100svh] bg-zinc-950 text-white flex items-center justify-center">
             <div className="text-zinc-500 text-sm animate-pulse">Loading referee console...</div>
         </div>
     );
 
     if (!match) return (
-        <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
+        <div className="min-h-[100svh] bg-zinc-950 text-white flex items-center justify-center">
             <div className="text-zinc-500 text-sm">Match not found.</div>
         </div>
     );
 
     if (match.referee_id !== userId) return (
-        <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center flex-col gap-4">
+        <div className="min-h-[100svh] bg-zinc-950 text-white flex items-center justify-center flex-col gap-4 px-4 text-center">
             <div className="text-red-400 font-semibold">Access denied — you are not the assigned referee.</div>
-            <button onClick={() => router.push(`/matches/${matchId}`)} className="text-sm text-zinc-400 hover:text-white">
+            <button onClick={viewMatchResults} className="text-sm text-zinc-400 hover:text-white">
                 ← Back to match
             </button>
         </div>
     );
 
     if (match.status === "completed") return (
-        <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center flex-col gap-4">
-            <div className="text-green-400 font-semibold text-lg">Match Completed</div>
-            <button onClick={() => router.push(`/matches/${matchId}`)} className="text-sm text-cyan-400 hover:underline">
-                View results →
-            </button>
+        <div className="min-h-[100svh] bg-zinc-950 text-white flex items-center justify-center px-4">
+            <div className="w-full max-w-xs rounded-3xl border border-white/10 bg-zinc-900/80 p-6 flex flex-col gap-4 text-center shadow-2xl">
+                <div className="flex flex-col gap-1">
+                    <div className="text-green-400 font-semibold text-lg">Match Completed</div>
+                    <p className="text-sm text-zinc-400">
+                        The result is already saved. You can review the final score or leave the referee console.
+                    </p>
+                </div>
+                <button
+                    onClick={viewMatchResults}
+                    className="w-full rounded-2xl bg-cyan-500/15 border border-cyan-500/35 px-4 py-3 text-sm font-black text-cyan-300 hover:bg-cyan-500/20 transition-colors"
+                >
+                    View Results
+                </button>
+                <button
+                    onClick={exitConsole}
+                    className="w-full rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-300 hover:bg-white/5 transition-colors"
+                >
+                    Exit Console
+                </button>
+            </div>
         </div>
     );
 
@@ -891,8 +1058,9 @@ export default function RefereeConsolePage() {
     const t1Score    = currentSet.team1_score ?? currentSet.player1_score;
     const t2Score    = currentSet.team2_score ?? currentSet.player2_score;
 
-    const t1SetsWon  = sets.filter(s => (s.team1_score ?? s.player1_score) > (s.team2_score ?? s.player2_score)).length;
-    const t2SetsWon  = sets.filter(s => (s.team2_score ?? s.player2_score) > (s.team1_score ?? s.player1_score)).length;
+    const completedSets = getSetsWon(sets);
+    const t1SetsWon  = completedSets.team1;
+    const t2SetsWon  = completedSets.team2;
 
     // Score limit / set-over derived state
     const ptsToWin     = scoreLimit ?? ruleset?.points_per_set ?? ruleset?.games_per_set ?? 21;
@@ -930,16 +1098,23 @@ export default function RefereeConsolePage() {
     // ── Render ─────────────────────────────────────────────────────────────────
 
     return (
-        <div className="min-h-screen bg-zinc-950 text-white">
+        <div className="min-h-[100svh] overflow-x-hidden bg-zinc-950 text-white">
             <NavBar backHref={`/matches/${matchId}`} backLabel="← Match" />
 
-            <main className="max-w-lg mx-auto px-4 py-6 flex flex-col gap-4" style={{ paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
+            <main
+                className="w-full max-w-lg mx-auto px-3 py-4 sm:px-4 sm:py-6 flex flex-col gap-3 sm:gap-4"
+                style={{
+                    paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))",
+                    paddingLeft: "max(0.75rem, env(safe-area-inset-left))",
+                    paddingRight: "max(0.75rem, env(safe-area-inset-right))",
+                }}
+            >
 
                 {/* Leave match confirmation modal */}
                 {showLeaveConfirm && (
                     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center px-6">
                         <div className="bg-zinc-900 border border-red-500/30 rounded-2xl p-6 max-w-sm w-full flex flex-col gap-4">
-                            <h3 className="font-black text-lg text-red-400">Leave Match?</h3>
+                            <h3 className="font-black text-lg text-red-400">Invalidate Match?</h3>
                             <p className="text-zinc-400 text-sm">
                                 Leaving will <span className="text-white font-semibold">invalidate this match</span>.
                                 All players will be notified and no ratings will be recorded.
@@ -956,7 +1131,7 @@ export default function RefereeConsolePage() {
                                     disabled={leaveLoading}
                                     className="flex-1 py-2.5 rounded-xl bg-red-500 hover:bg-red-400 text-white text-sm font-black transition-colors disabled:opacity-50"
                                 >
-                                    {leaveLoading ? "Leaving…" : "Leave & Invalidate"}
+                                    {leaveLoading ? "Invalidating..." : "Invalidate Match"}
                                 </button>
                             </div>
                         </div>
@@ -1029,19 +1204,19 @@ export default function RefereeConsolePage() {
                 )}
 
                 {/* Header */}
-                <div className="flex items-center justify-between">
-                    <div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
                         <div className="text-xs font-bold tracking-widest text-zinc-500 uppercase">Referee Console</div>
-                        <div className="text-lg font-black capitalize">{match.sport.replace("_", " ")}</div>
+                        <div className="text-base sm:text-lg font-black capitalize break-words">{match.sport.replace("_", " ")}</div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
                     <button
                         onClick={() => setShowLeaveConfirm(true)}
-                        className="text-xs border border-red-500/30 text-red-400 px-3 py-1 rounded-full hover:bg-red-500/10 transition-colors font-semibold"
+                        className="text-xs border border-red-500/30 text-red-400 px-3 py-1.5 rounded-full hover:bg-red-500/10 transition-colors font-semibold"
                     >
-                        Leave
+                        Invalidate
                     </button>
-                    <span className={`text-xs border px-2.5 py-1 rounded-full font-semibold ${
+                    <span className={`text-xs border px-2.5 py-1.5 rounded-full font-semibold ${
                         !isOnline
                             ? "bg-orange-500/10 text-orange-400 border-orange-500/30"
                             : syncing
@@ -1050,7 +1225,7 @@ export default function RefereeConsolePage() {
                     }`}>
                         {!isOnline ? "Offline" : syncing ? "Syncing…" : "Live"}
                     </span>
-                    </div> {/* /flex gap-2 */}
+                    </div>
                 </div>
 
                 {/* Offline / sync banner */}
@@ -1078,7 +1253,7 @@ export default function RefereeConsolePage() {
                 )}
 
                 {/* Scoreboard */}
-                <div className="bg-zinc-900 border border-white/10 rounded-2xl p-5">
+                <div className="bg-zinc-900 border border-white/10 rounded-2xl p-4 sm:p-5">
                     {/* Sets won */}
                     <div className="flex justify-between items-center mb-4">
                         <div className="text-center flex-1 min-w-0">
@@ -1096,10 +1271,10 @@ export default function RefereeConsolePage() {
                         </div>
                     </div>
 
-                    <div className="flex items-center justify-center gap-6">
-                        <div className="text-5xl sm:text-6xl font-black tabular-nums">{t1SetsWon}</div>
+                    <div className="flex items-center justify-center gap-4 sm:gap-6">
+                        <div className="text-[clamp(2.5rem,17vw,3.75rem)] font-black tabular-nums">{t1SetsWon}</div>
                         <div className="text-2xl text-zinc-600 font-bold">—</div>
-                        <div className="text-5xl sm:text-6xl font-black tabular-nums">{t2SetsWon}</div>
+                        <div className="text-[clamp(2.5rem,17vw,3.75rem)] font-black tabular-nums">{t2SetsWon}</div>
                     </div>
 
                     {/* Current set score */}
@@ -1127,11 +1302,11 @@ export default function RefereeConsolePage() {
                             </div>
                         )}
 
-                        <div className="flex items-center justify-center gap-8">
+                        <div className="flex items-center justify-center gap-4 sm:gap-8">
                             {/* Team 1 Quick Actions */}
-                            <div className="flex flex-col items-center gap-3">
-                                <div className={`text-4xl sm:text-5xl font-black tabular-nums ${servingTeam === "team1" ? "text-cyan-400" : "text-zinc-400"}`}>{t1Score}</div>
-                                <div className="flex gap-1.5">
+                            <div className="min-w-0 flex-1 flex flex-col items-center gap-3">
+                                <div className={`text-[clamp(2.2rem,16vw,3rem)] font-black tabular-nums ${servingTeam === "team1" ? "text-cyan-400" : "text-zinc-400"}`}>{t1Score}</div>
+                                <div className="flex flex-wrap justify-center gap-1.5">
                                     {/* Pickleball: only serving team can score — hide Winner for non-serving team */}
                                     {(!isDoubles || match.sport !== "pickleball" || servingTeam === "team1") && (
                                         <button
@@ -1171,12 +1346,12 @@ export default function RefereeConsolePage() {
                                 </div>
                             </div>
 
-                            <div className="text-xl text-zinc-700 font-bold self-start mt-2">:</div>
+                            <div className="text-xl text-zinc-700 font-bold self-start mt-2 shrink-0">:</div>
 
                             {/* Team 2 Quick Actions */}
-                            <div className="flex flex-col items-center gap-3">
-                                <div className={`text-4xl sm:text-5xl font-black tabular-nums ${servingTeam === "team2" ? "text-violet-400" : "text-zinc-400"}`}>{t2Score}</div>
-                                <div className="flex gap-1.5">
+                            <div className="min-w-0 flex-1 flex flex-col items-center gap-3">
+                                <div className={`text-[clamp(2.2rem,16vw,3rem)] font-black tabular-nums ${servingTeam === "team2" ? "text-violet-400" : "text-zinc-400"}`}>{t2Score}</div>
+                                <div className="flex flex-wrap justify-center gap-1.5">
                                     {(!isDoubles || match.sport !== "pickleball" || servingTeam === "team2") && (
                                         <button
                                             disabled={isCurrentSetOver}
@@ -1217,7 +1392,7 @@ export default function RefereeConsolePage() {
 
                     {/* Set selector */}
                     {sets.length > 1 && (
-                        <div className="flex gap-2 justify-center mt-3">
+                        <div className="mt-3 flex flex-wrap gap-2 justify-center">
                             {sets.map(s => (
                                 <button
                                     key={s.set_number}
@@ -1440,7 +1615,7 @@ export default function RefereeConsolePage() {
                     </button>
 
                     {/* Receiving team wins rally — serve rotation */}
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-2 gap-3 max-[280px]:grid-cols-1">
                         <button
                             onClick={() => { setLostServeFaulter(""); setModal({ type: "lost_serve" }); }}
                             className="bg-amber-500/15 border-2 border-amber-500/30 hover:bg-amber-500/25 text-amber-300 font-black py-4 text-sm rounded-2xl shadow-md transition-all active:scale-95 touch-manipulation"
@@ -1486,7 +1661,7 @@ export default function RefereeConsolePage() {
                 )}
 
                 {/* Secondary actions */}
-                <div className="grid grid-cols-3 gap-2 mt-2">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
                     <button
                         onClick={() => setModal({ type: "violation" })}
                         className="bg-yellow-500/5 border border-yellow-500/20 text-yellow-500 hover:bg-yellow-500/10 text-xs font-black py-3 rounded-xl transition-colors touch-manipulation"
@@ -1521,7 +1696,7 @@ export default function RefereeConsolePage() {
                                         body: JSON.stringify({ player1_score: 0, player2_score: 0 }),
                                     });
                                 }}
-                                className={`text-xs font-black py-3 rounded-xl transition-colors touch-manipulation border ${
+                                className={`col-span-2 sm:col-span-1 text-xs font-black py-3 rounded-xl transition-colors touch-manipulation border ${
                                     canAddSet
                                         ? "bg-white/5 border-white/10 text-zinc-500 hover:text-white"
                                         : "bg-transparent border-zinc-900 text-zinc-800 cursor-not-allowed"
@@ -1567,6 +1742,8 @@ export default function RefereeConsolePage() {
                                     else desc = `Point → ${team}` + (p.cause ? ` (${p.cause})` : "");
                                 } else if (action.type === "violation") {
                                     desc = `Violation: ${p.violation_code ?? "recorded"}`;
+                                } else if (action.type === "complete") {
+                                    desc = "Match completion queued";
                                 } else if (action.type === "undo") {
                                     desc = "Undo";
                                 }
@@ -1604,7 +1781,7 @@ export default function RefereeConsolePage() {
                 {ruleset && (
                     <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-4 flex flex-col gap-3">
                         <div className="text-xs font-bold tracking-widest text-zinc-600 uppercase">Rules</div>
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-500">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-500">
                             <span>Points to win: <span className="text-zinc-300">{ptsToWin}</span></span>
                             <span>Sets to win: <span className="text-zinc-300">{ruleset.sets_to_win}</span></span>
                             <span>Win by: <span className="text-zinc-300">{ruleset.win_by}</span></span>
@@ -1614,7 +1791,7 @@ export default function RefereeConsolePage() {
                         {ruleset.points_per_set && (
                             <div>
                                 <div className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-2">Score limit</div>
-                                <div className="flex gap-2">
+                                <div className="flex gap-2 max-[280px]:flex-col">
                                     {([11, 15, 21] as const).map(n => (
                                         <button
                                             key={n}
@@ -1684,7 +1861,7 @@ export default function RefereeConsolePage() {
                                 {match.sport === "pickleball" ? "Serving player who lost the rally?" : "Who faulted?"}
                                 <span className="text-zinc-700 ml-1">(optional)</span>
                             </div>
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
                                 {players.filter(p => p.team === servingTeam).map(p => (
                                     <button key={p.id}
                                         onClick={() => setLostServeFaulter(lostServeFaulter === p.id ? "" : p.id)}
@@ -1862,7 +2039,7 @@ export default function RefereeConsolePage() {
                                                 Scoring player {missingPlayer ? "— required ✱" : ""}
                                             </span>
                                         </div>
-                                        <div className="grid grid-cols-2 gap-2">
+                                        <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
                                             {players.filter(p => p.team === modal.team).map(p => (
                                                 <button key={p.id}
                                                     onClick={() => setAttrPlayer(attrPlayer === p.id ? "" : p.id)}
@@ -1939,7 +2116,7 @@ export default function RefereeConsolePage() {
                                                 Opponent who committed the error {missingPlayer ? "— required ✱" : ""}
                                             </span>
                                         </div>
-                                        <div className="grid grid-cols-2 gap-2">
+                                        <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
                                             {players.filter(p => p.team !== modal.team).map(p => (
                                                 <button key={p.id}
                                                     onClick={() => setErrorPlayer(errorPlayer === p.id ? "" : p.id)}
@@ -2010,7 +2187,7 @@ export default function RefereeConsolePage() {
 
                         <div>
                             <div className="text-xs text-zinc-500 mb-2">Violating player</div>
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
                                 {players.map(p => (
                                     <button
                                         key={p.id}
@@ -2049,7 +2226,7 @@ export default function RefereeConsolePage() {
 
                         <div>
                             <div className="text-xs text-zinc-500 mb-2">Award point to (optional)</div>
-                            <div className="grid grid-cols-3 gap-2">
+                            <div className="grid grid-cols-3 gap-2 max-[280px]:grid-cols-1">
                                 {(["team1", "team2", ""] as const).map(t => (
                                     <button
                                         key={t || "none"}
@@ -2090,7 +2267,7 @@ export default function RefereeConsolePage() {
                                 className="text-zinc-500 hover:text-white text-lg">✕</button>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-3">
+                        <div className="grid grid-cols-2 gap-3 max-[280px]:grid-cols-1">
                             <button
                                 onClick={() => setEndWinner("team1")}
                                 className={`py-4 rounded-xl border font-bold text-sm transition-all ${
@@ -2137,7 +2314,13 @@ export default function RefereeConsolePage() {
 
             {/* ── Connection Status Modal ── */}
             {connPhase !== "online" && (
-                <div className="fixed inset-0 z-40 flex items-end justify-center pb-8 px-4 pointer-events-none">
+                <div
+                    className={`fixed inset-0 z-40 flex px-4 ${
+                        connPhase === "syncing"
+                            ? "items-center justify-center bg-black/55 backdrop-blur-[2px]"
+                            : "items-end justify-center pb-8 pointer-events-none"
+                    }`}
+                >
                     <div className={`pointer-events-auto w-full max-w-sm rounded-2xl px-5 py-4 shadow-2xl border flex flex-col gap-3 transition-all ${
                         connPhase === "offline"
                             ? "bg-zinc-950 border-orange-500/40"
@@ -2166,9 +2349,9 @@ export default function RefereeConsolePage() {
                                         <div className="w-5 h-5 border-2 border-blue-500/30 border-t-blue-400 rounded-full animate-spin" />
                                     </div>
                                     <div className="flex-1 min-w-0">
-                                        <p className="font-black text-blue-300 text-sm leading-tight">Back Online — Syncing</p>
+                                        <p className="font-black text-blue-300 text-sm leading-tight">Back to Online</p>
                                         <p className="text-xs text-zinc-500 mt-0.5">
-                                            Saving {offlineQueue.length} offline action{offlineQueue.length !== 1 ? "s" : ""} to server…
+                                            Wait for a moment while we save your records online.
                                         </p>
                                     </div>
                                     <span className="shrink-0 text-[10px] font-black px-2 py-1 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/25 uppercase tracking-widest">
@@ -2180,11 +2363,11 @@ export default function RefereeConsolePage() {
                                 <>
                                     <div className="w-9 h-9 rounded-xl bg-emerald-500/15 flex items-center justify-center shrink-0 text-lg">✅</div>
                                     <div className="flex-1 min-w-0">
-                                        <p className="font-black text-emerald-300 text-sm leading-tight">All Actions Saved!</p>
-                                        <p className="text-xs text-zinc-500 mt-0.5">Scores are up to date. Resuming live match…</p>
+                                        <p className="font-black text-emerald-300 text-sm leading-tight">Back to Online</p>
+                                        <p className="text-xs text-zinc-500 mt-0.5">Offline records saved online successfully. You can continue scoring.</p>
                                     </div>
                                     <span className="shrink-0 text-[10px] font-black px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 uppercase tracking-widest">
-                                        Live
+                                        Saved
                                     </span>
                                 </>
                             )}
@@ -2192,16 +2375,26 @@ export default function RefereeConsolePage() {
 
                         {/* Progress bar — only during syncing */}
                         {connPhase === "syncing" && (
-                            <div className="w-full h-1 rounded-full bg-white/5 overflow-hidden">
-                                <div className="h-full bg-blue-500/60 rounded-full animate-pulse" style={{ width: "60%" }} />
-                            </div>
+                            <>
+                                <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 px-3 py-3 text-[11px] text-blue-100">
+                                    <div className="font-semibold text-blue-200">Back to Online</div>
+                                    <div className="mt-1 text-zinc-300">Wait for a moment to save records online.</div>
+                                    <div className="mt-1 text-zinc-500">
+                                        Saving {Math.max(offlineQueue.length, 1)} offline action{Math.max(offlineQueue.length, 1) !== 1 ? "s" : ""}.
+                                        This usually finishes within 5 seconds.
+                                    </div>
+                                </div>
+                                <div className="w-full h-1 rounded-full bg-white/5 overflow-hidden">
+                                    <div className="h-full bg-blue-500/60 rounded-full animate-pulse" style={{ width: "60%" }} />
+                                </div>
+                            </>
                         )}
 
                         {/* Dismiss bar — synced */}
                         {connPhase === "synced" && (
                             <div className="w-full h-0.5 bg-white/5 rounded-full overflow-hidden">
                                 <div className="h-full bg-emerald-500/60 rounded-full"
-                                    style={{ animation: "shrink 2.5s linear forwards" }} />
+                                    style={{ animation: `shrink ${RECONNECT_NOTICE_MS}ms linear forwards` }} />
                             </div>
                         )}
 

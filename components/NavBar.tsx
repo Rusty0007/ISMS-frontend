@@ -568,17 +568,39 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
         if (!token) return;
         setRespondingId(friendshipId);
         try {
+            let res: Response;
             if (action === "accept") {
-                await fetch(`/api/friends/${friendshipId}/accept`, {
+                res = await fetch(`/api/friends/${friendshipId}/accept`, {
                     method: "POST",
                     headers: { Authorization: `Bearer ${token}` },
                 });
             } else {
-                await fetch(`/api/friends/${friendshipId}`, {
+                res = await fetch(`/api/friends/${friendshipId}`, {
                     method: "DELETE",
                     headers: { Authorization: `Bearer ${token}` },
                 });
             }
+
+            if (!res.ok) {
+                const payload = await res.json().catch(() => ({}));
+                const message = (payload as { detail?: string }).detail ?? "Failed to update friend request.";
+                throw new Error(message);
+            }
+
+            if (action === "accept") {
+                setNotifications(prev => prev.map(n =>
+                    n.reference_id === friendshipId
+                        ? {
+                            ...n,
+                            type: "friend_request_accepted",
+                            title: "Friend Request Accepted",
+                            body: "You are now connected.",
+                            is_read: true,
+                        }
+                        : n
+                ));
+            }
+
             await fetchNotifications();
         } catch (err) {
             console.error(`[NavBar] handleFriendResponse error:`, err);

@@ -211,6 +211,10 @@ export default function MatchLobbyPage() {
     const team1        = lobby.players.filter(p => p.team_no === 1);
     const team2        = lobby.players.filter(p => p.team_no === 2);
     const myEntry      = lobby.players.find(p => p.user_id === myId);
+    const isSingles    = lobby.match_format === "singles";
+    const shouldSwapSinglesSides = isSingles && myEntry?.team_no === 2;
+    const leftSidePlayers = shouldSwapSinglesSides ? team2 : team1;
+    const rightSidePlayers = shouldSwapSinglesSides ? team1 : team2;
     const amEntered    = myEntry?.status === "entered" || entered;
     const enteredCount = lobby.players.filter(p => p.status === "entered").length;
     const sportEmoji   = SPORT_EMOJI[lobby.sport] ?? "🎾";
@@ -244,29 +248,49 @@ export default function MatchLobbyPage() {
 
                     {/* Teams */}
                     <div className="bg-zinc-900 border border-white/10 rounded-2xl overflow-hidden">
-                        {/* Team 1 */}
-                        <div className="px-4 pt-4 pb-2">
-                            <p className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mb-2">Team 1</p>
-                            <div className="flex flex-col gap-2">
-                                {team1.map(p => (
-                                    <PlayerRow key={p.user_id} player={p} isYou={p.user_id === myId} />
-                                ))}
-                                {team1.length === 0 && <p className="text-xs text-zinc-600 italic">No players assigned</p>}
+                        {isSingles ? (
+                            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-stretch gap-3 p-4">
+                                <SinglesLobbySide
+                                    label="Left Side"
+                                    player={leftSidePlayers[0] ?? null}
+                                    isYou={leftSidePlayers[0]?.user_id === myId}
+                                />
+                                <div className="flex items-center justify-center text-[10px] font-black tracking-[0.3em] text-zinc-600 uppercase">
+                                    vs
+                                </div>
+                                <SinglesLobbySide
+                                    label="Right Side"
+                                    player={rightSidePlayers[0] ?? null}
+                                    isYou={rightSidePlayers[0]?.user_id === myId}
+                                />
                             </div>
-                        </div>
+                        ) : (
+                            <>
+                                {/* Team 1 */}
+                                <div className="px-4 pt-4 pb-2">
+                                    <p className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mb-2">Team 1</p>
+                                    <div className="flex flex-col gap-2">
+                                        {team1.map(p => (
+                                            <PlayerRow key={p.user_id} player={p} isYou={p.user_id === myId} />
+                                        ))}
+                                        {team1.length === 0 && <p className="text-xs text-zinc-600 italic">No players assigned</p>}
+                                    </div>
+                                </div>
 
-                        <div className="mx-4 my-3 h-px bg-white/5" />
+                                <div className="mx-4 my-3 h-px bg-white/5" />
 
-                        {/* Team 2 */}
-                        <div className="px-4 pb-4 pt-2">
-                            <p className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mb-2">Team 2</p>
-                            <div className="flex flex-col gap-2">
-                                {team2.map(p => (
-                                    <PlayerRow key={p.user_id} player={p} isYou={p.user_id === myId} />
-                                ))}
-                                {team2.length === 0 && <p className="text-xs text-zinc-600 italic">No players assigned</p>}
-                            </div>
-                        </div>
+                                {/* Team 2 */}
+                                <div className="px-4 pb-4 pt-2">
+                                    <p className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase mb-2">Team 2</p>
+                                    <div className="flex flex-col gap-2">
+                                        {team2.map(p => (
+                                            <PlayerRow key={p.user_id} player={p} isYou={p.user_id === myId} />
+                                        ))}
+                                        {team2.length === 0 && <p className="text-xs text-zinc-600 italic">No players assigned</p>}
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </div>
 
                     {/* Status / CTA */}
@@ -331,6 +355,55 @@ export default function MatchLobbyPage() {
                 </div>
             </div>
         </>
+    );
+}
+
+function SinglesLobbySide({
+    label,
+    player,
+    isYou,
+}: {
+    label: string;
+    player: LobbyPlayer | null;
+    isYou: boolean;
+}) {
+    const entered = player?.status === "entered";
+
+    return (
+        <div className={`min-w-0 rounded-2xl border p-3 flex flex-col gap-3 ${
+            player
+                ? entered
+                    ? "border-emerald-500/20 bg-emerald-500/8"
+                    : "border-zinc-700/40 bg-zinc-800/40"
+                : "border-zinc-800 bg-zinc-950/50"
+        }`}>
+            <p className="text-[10px] font-bold tracking-widest text-zinc-500 uppercase">{label}</p>
+
+            {player ? (
+                <div className="flex items-center gap-3 min-w-0">
+                    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+                        entered ? "bg-emerald-500/20 text-emerald-300" : "bg-zinc-700 text-zinc-400"
+                    }`}>
+                        {player.username?.[0]?.toUpperCase() ?? "?"}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-white truncate">
+                            @{player.username ?? "Unknown"}
+                            {isYou && <span className="ml-2 text-[10px] text-violet-400 font-bold uppercase tracking-wider">you</span>}
+                        </p>
+                        <p className={`text-[10px] font-bold uppercase tracking-wider ${
+                            entered ? "text-emerald-400" : "text-zinc-500"
+                        }`}>
+                            {entered ? "Entered" : "Waiting"}
+                        </p>
+                    </div>
+                </div>
+            ) : (
+                <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-zinc-800 bg-zinc-950/40 px-3 py-5 text-center text-xs text-zinc-600 italic">
+                    Awaiting player
+                </div>
+            )}
+        </div>
     );
 }
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import NotificationModal from "@/components/NotificationModal";
 import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
@@ -30,6 +30,7 @@ interface PlayerResult {
 
 export default function NewMatchPage() {
     const router = useRouter();
+    const pathname = usePathname();
     const [userSports,  setUserSports]  = useState<string[]>([]);
     const [fetchingMe,  setFetchingMe]  = useState(true);
     const [matchType,   setMatchType]   = useState<MatchType>("friendly");
@@ -161,6 +162,16 @@ export default function NewMatchPage() {
         }
     }
 
+    function handleLogoClick() {
+        if (pathname === "/dashboard") {
+            window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+            window.location.assign("/dashboard");
+            return;
+        }
+
+        router.push("/dashboard");
+    }
+
     const inputClass = "bg-zinc-800 border border-white/10 rounded-lg px-4 py-3 text-sm text-white focus:outline-none focus:border-cyan-500 transition-colors placeholder-zinc-600";
 
     if (fetchingMe) {
@@ -182,9 +193,14 @@ export default function NewMatchPage() {
             />
 
             <nav className="relative z-10 border-b border-white/10 bg-zinc-950/80 backdrop-blur-sm px-6 py-4 flex items-center justify-between">
-                <Link href="/">
+                <button
+                    type="button"
+                    onClick={handleLogoClick}
+                    className="rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
+                    aria-label="Go to dashboard"
+                >
                     <Image src="/logo.png" alt="iSMS" width={120} height={40} className="h-10 w-auto" />
-                </Link>
+                </button>
                 <Link href="/matches" className="text-sm text-zinc-400 hover:text-white transition-colors">
                     ← My Matches
                 </Link>
@@ -399,4 +415,3 @@ export default function NewMatchPage() {
         </div>
     );
 }
-

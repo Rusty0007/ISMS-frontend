@@ -924,7 +924,7 @@ export default function MatchDetailPage() {
                 )}
 
                 {/* Referee Assignment Section */}
-                {((isOngoing || match.status === "pending") && !hasReferee && isParticipant) && (
+                {((isOngoing || match.status === "pending" || match.status === "pending_approval") && !hasReferee && isParticipant) && (
                     <div className="relative overflow-hidden bg-gradient-to-br from-amber-500/10 to-orange-500/5 border border-amber-500/20 rounded-3xl p-6 sm:p-8">
                         <div className="relative z-10 flex flex-col sm:flex-row items-center gap-6">
                             <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center text-3xl shrink-0 shadow-inner border border-amber-500/10">
@@ -1027,7 +1027,7 @@ export default function MatchDetailPage() {
                 )}
 
                 {/* Referee invite panel (Pending list) */}
-                {(isOngoing || isPending) && !hasReferee && pendingInvites.length > 0 && (
+                {(isOngoing || isPending || match.status === "pending_approval") && !hasReferee && pendingInvites.length > 0 && (
                     <div className="flex flex-col gap-3">
                         <p className="text-[10px] font-black text-zinc-600 uppercase tracking-widest px-4">Active Invitations</p>
                         <RefereeInvitePanel invites={pendingInvites} isParticipant={isParticipant} />
@@ -1387,24 +1387,6 @@ function PresenceGroup({ label, players }: { label: string; players: { id: strin
                     </div>
                 ))}
             </div>
-        </div>
-    );
-}
-
-function PresencePill({ label, connected }: { label: string; connected: boolean }) {
-    return (
-        <div className={`rounded-xl border px-3 py-2.5 text-sm ${
-            connected
-                ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-200"
-                : "border-red-500/20 bg-red-500/5 text-red-200"
-        }`}>
-            <div className="flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${connected ? "bg-emerald-400" : "bg-red-400"}`} />
-                <span className="font-semibold">{label}</span>
-            </div>
-            <p className={`mt-1 text-[11px] ${connected ? "text-emerald-300/70" : "text-red-300/70"}`}>
-                {connected ? "Connected to this match" : "Not currently on this match page"}
-            </p>
         </div>
     );
 }

@@ -65,8 +65,8 @@ export async function registerFcmToken(authToken: string): Promise<void> {
         const permission = await Notification.requestPermission();
         if (permission !== "granted") return;
 
-        // Register the service worker that handles background messages
-        const swReg = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
+        // Register the service worker that handles background messages (and offline support)
+        const swReg = await navigator.serviceWorker.register("/sw.js");
 
         const msging = getFirebaseMessaging();
         if (!msging) return;

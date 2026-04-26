@@ -19,10 +19,15 @@ export interface PendingOfflineMatchNotice {
 }
 
 export const OFFLINE_QUEUE_PREFIX = "isms_offline_";
+export const OFFLINE_SNAPSHOT_PREFIX = "isms_referee_snapshot_";
 export const OFFLINE_MATCH_NOTICE_KEY = "isms_pending_offline_match_notice";
 
 export function getOfflineQueueKey(matchId: string) {
     return `${OFFLINE_QUEUE_PREFIX}${matchId}`;
+}
+
+export function getRefereeSnapshotKey(matchId: string) {
+    return `${OFFLINE_SNAPSHOT_PREFIX}${matchId}`;
 }
 
 export function listOfflineQueueKeys(storage: Storage) {
@@ -47,6 +52,21 @@ export function writeOfflineQueue(storage: Storage, matchId: string, queue: Offl
     try {
         if (queue.length) storage.setItem(getOfflineQueueKey(matchId), JSON.stringify(queue));
         else storage.removeItem(getOfflineQueueKey(matchId));
+    } catch {}
+}
+
+export function readRefereeSnapshot<T>(storage: Storage, matchId: string): T | null {
+    try {
+        const raw = storage.getItem(getRefereeSnapshotKey(matchId));
+        return raw ? JSON.parse(raw) as T : null;
+    } catch {
+        return null;
+    }
+}
+
+export function writeRefereeSnapshot<T>(storage: Storage, matchId: string, snapshot: T) {
+    try {
+        storage.setItem(getRefereeSnapshotKey(matchId), JSON.stringify(snapshot));
     } catch {}
 }
 

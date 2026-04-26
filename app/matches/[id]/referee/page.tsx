@@ -7,8 +7,10 @@ import { useTokenRefresh } from "@/lib/useTokenRefresh";
 import {
     dispatchOfflineQueuedAction,
     getOfflineQueueKey,
+    readRefereeSnapshot,
     type OfflineQueuedAction as QueuedAction,
     writePendingOfflineMatchNotice,
+    writeRefereeSnapshot,
 } from "@/lib/offline-match";
 import NavBar from "@/components/NavBar";
 
@@ -92,6 +94,17 @@ interface Ruleset {
     violation_types: { code: string; label: string }[];
     error_types?: { code: string; label: string }[];
     scoring_causes?: string[];
+}
+
+interface RefereeSnapshot {
+    match: MatchData;
+    sets: SetData[];
+    history: HistoryEntry[];
+    ruleset: Ruleset | null;
+    profiles: Record<string, PlayerProfile>;
+    activeSet: number;
+    scoreLimit: number | null;
+    savedAt: string;
 }
 
 type AttrStep = "cause_type" | "winning_shot" | "opponent_error" | "other" | "serve";

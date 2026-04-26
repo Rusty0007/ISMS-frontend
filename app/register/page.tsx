@@ -26,18 +26,55 @@ export default function RegisterPage() {
         setModal(null);
     }
 
+    function getApiErrorMessage(data: unknown): string {
+        if (!data || typeof data !== "object") {
+            return "Something went wrong. Please try again.";
+        }
+
+        const detail = (data as { detail?: unknown }).detail;
+
+        if (typeof detail === "string") {
+            return detail;
+        }
+
+        if (Array.isArray(detail)) {
+            return detail
+                .map((item) => {
+                    if (item && typeof item === "object") {
+                        const msg = (item as { msg?: unknown }).msg;
+                        const loc = (item as { loc?: unknown }).loc;
+                        const field = Array.isArray(loc) ? loc[loc.length - 1] : null;
+                        if (typeof msg === "string") {
+                            return field ? `${field}: ${msg}` : msg;
+                        }
+                    }
+                    return null;
+                })
+                .filter(Boolean)
+                .join("\n") || "Please check your registration details.";
+        }
+
+        return "Something went wrong. Please try again.";
+    }
+
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
         setLoading(true);
         try {
+            const username = form.email
+                .split("@")[0]
+                .toLowerCase()
+                .replace(/[^a-z0-9_]/g, "_")
+                .replace(/^_+|_+$/g, "") || `player_${Date.now()}`;
+
             const res = await fetch("/api/auth/register", {
                 method: "POST",
                 headers: { "Content-Type": "application/json"},
-                body: JSON.stringify(form),
+                body: JSON.stringify({ ...form, username }),
             });
             const data = await res.json();
             if (!res.ok) {
-                setModal({ type: "error", title: "Registration Failed", message: data.detail || "Something went wrong. Please try again." });
+                setModal({ type: "error", title: "Registration Failed", message: getApiErrorMessage(data) });
                 return;
             }
             setModal({ type: "success", title: "Account Created!", message: "Your account has been successfully created. You can now sign in." });

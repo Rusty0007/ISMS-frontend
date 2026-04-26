@@ -40,7 +40,6 @@ interface SetData {
 
 interface PlayerProfile {
     id: string;
-    username: string;
     first_name: string;
     last_name: string;
 }
@@ -93,6 +92,7 @@ export default function MatchDetailPage() {
     const [playerProfiles, setPlayerProfiles] = useState<Record<string, PlayerProfile>>({});
     const [loading,        setLoading]        = useState(true);
     const [actionLoading,  setActionLoading]  = useState(false);
+    const [matchMissing,   setMatchMissing]   = useState(false);
     const [error,          setError]          = useState("");
     const [showComplete,      setShowComplete]      = useState(false);
     const [showInviteReferee, setShowInviteReferee] = useState(false);
@@ -103,7 +103,7 @@ export default function MatchDetailPage() {
     const [presence,          setPresence]          = useState<MatchPresenceSnapshot | null>(null);
     const [isBrowserOnline,   setIsBrowserOnline]   = useState(true);
     const [connectionState,   setConnectionState]   = useState<MatchConnectionState>("live");
-    const [lastServerSyncAt,  setLastServerSyncAt]  = useState<string | null>(null);
+    const [,                  setLastServerSyncAt]  = useState<string | null>(null);
     const [setWonInfo, setSetWonInfo] = useState<{
         setNumber: number;
         winner: "team1" | "team2";
@@ -157,7 +157,17 @@ export default function MatchDetailPage() {
                 router.replace("/login");
                 return;
             }
+            if (matchRes.status === 404) {
+                setMatchMissing(true);
+                setMatch(null);
+                setPresence(null);
+                setPlayerProfiles({});
+                setError("This match is no longer available.");
+                setConnectionState("offline");
+                return;
+            }
             if (!matchRes.ok) return;
+            setMatchMissing(false);
 
             const matchData = await matchRes.json();
             const m: MatchData = matchData.match;
@@ -235,7 +245,7 @@ export default function MatchDetailPage() {
                 setConnectionState("reconnecting");
             }
             const token = getAccessToken();
-            if (token) {
+            if (token && !matchMissing) {
                 void fetchMatch(token);
             }
         };
@@ -252,7 +262,7 @@ export default function MatchDetailPage() {
             window.removeEventListener("online", handleOnline);
             window.removeEventListener("offline", handleOffline);
         };
-    }, [fetchMatch]);
+    }, [fetchMatch, matchMissing]);
 
     // Initial load — fills the page before WebSocket sends its "init"
     useEffect(() => {
@@ -260,6 +270,12 @@ export default function MatchDetailPage() {
         if (!token) return;
         fetchMatch(token).finally(() => setLoading(false));
     }, [fetchMatch, getToken]);
+
+    useEffect(() => {
+        if (!matchMissing) return;
+        const timer = setTimeout(() => router.replace("/matches"), 1500);
+        return () => clearTimeout(timer);
+    }, [matchMissing, router]);
 
     // Load pending referee invites for this match
     useEffect(() => {
@@ -286,7 +302,7 @@ export default function MatchDetailPage() {
 
     // WebSocket — real-time match updates via Redis pub/sub
     useEffect(() => {
-        if (!matchId) return;
+        if (!matchId || matchMissing) return;
         let alive = true;
 
         function connect() {
@@ -427,7 +443,7 @@ export default function MatchDetailPage() {
                 }
             }
         };
-    }, [matchId]);
+    }, [matchId, matchMissing]);
 
     useEffect(() => {
         if (!matchId || match?.status !== "ongoing") {
@@ -571,7 +587,7 @@ export default function MatchDetailPage() {
                     invited_by:       userId ?? "",
                     invited_by_name:  "You",
                     invited_user:     playerId,
-                    invited_username: refereeResults.find(p => p.id === playerId)?.username ?? playerId.slice(0, 8),
+                    invited_username: (() => { const p = refereeResults.find(r => r.id === playerId); return p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() || playerId.slice(0, 8) : playerId.slice(0, 8); })(),
                     status:           "pending",
                     expires_at:       d.expires_at ?? null,
                 }]);
@@ -676,7 +692,9 @@ export default function MatchDetailPage() {
     if (!match) {
         return (
             <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
-                <div className="text-zinc-500 text-sm">Match not found.</div>
+                <div className="text-zinc-500 text-sm">
+                    {matchMissing ? "Match not found. Returning to matches..." : "Match not found."}
+                </div>
             </div>
         );
     }
@@ -722,20 +740,14 @@ export default function MatchDetailPage() {
         return presence.connected_player_ids.includes(id);
     }
 
-    const connectionSummary = lastServerSyncAt
-        ? `Last server sync ${new Date(lastServerSyncAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-        : "Waiting for live match updates";
-
     function name(id: string | null): string {
         if (!id) return "—";
         const p = playerProfiles[id];
-        return p ? `@${p.username}` : `${id.slice(0, 8)}…`;
+        return p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() || id.slice(0, 8) : `${id.slice(0, 8)}…`;
     }
 
     // ── Assembling View ──
     const shouldSwapSinglesSides = match.match_format === "singles" && userId === match.player2_id;
-    const leftSideName = shouldSwapSinglesSides ? name(match.player2_id) : name(match.player1_id);
-    const rightSideName = shouldSwapSinglesSides ? name(match.player1_id) : name(match.player2_id);
 
     if (match.status === "assembling") {
         return (
@@ -768,18 +780,41 @@ export default function MatchDetailPage() {
             ? match.winner_id === match.player2_id || match.winner_id === match.player4_id
             : match.winner_id === rightPrimaryId
     );
+    const currentSet = sets.at(-1) ?? null;
+    const currentSetNumber = currentSet?.set_number ?? 1;
+    const currentLeftScore = currentSet
+        ? (shouldSwapSinglesSides ? currentSet.player2_score : currentSet.player1_score)
+        : 0;
+    const currentRightScore = currentSet
+        ? (shouldSwapSinglesSides ? currentSet.player1_score : currentSet.player2_score)
+        : 0;
+    const matchModeLabel = match.tournament_id
+        ? "Tournament Match"
+        : match.match_type === "ranked"
+            ? "Ranked Match"
+            : match.match_type === "queue"
+                ? "Normal Match"
+                : match.match_type.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+    const viewerMode = isReferee ? "referee" : isParticipant ? "player" : "watcher";
+    const canAcceptMatch = isPending && isParticipant && !hasAccepted;
+    const canInviteRefereeNow = (isOngoing || isPending || match.status === "pending_approval") && !hasReferee && isParticipant;
 
     return (
-        <div className="min-h-screen bg-zinc-950 text-white">
-            <div
-                className="fixed inset-0 pointer-events-none"
-                style={{
-                    backgroundImage: `linear-gradient(rgba(6,182,212,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(6,182,212,0.04) 1px, transparent 1px)`,
-                    backgroundSize: "60px 60px",
-                }}
-            />
+        <div className="min-h-screen bg-[#050b14] text-white selection:bg-cyan-500/30 font-sans">
+            {/* Background Tactical Elements */}
+            <div className="fixed inset-0 pointer-events-none overflow-hidden">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(6,182,212,0.05)_0%,transparent_50%)]" />
+                <div 
+                    className="absolute inset-0 opacity-[0.03]"
+                    style={{
+                        backgroundImage: `linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)`,
+                        backgroundSize: "40px 40px",
+                    }}
+                />
+                <div className="absolute inset-0 animate-scanline pointer-events-none opacity-[0.02] bg-[linear-gradient(transparent,rgba(255,255,255,0.5),transparent)] h-12" />
+            </div>
 
-            <main className="relative z-10 max-w-2xl mx-auto px-4 py-6 sm:px-6 sm:py-10 flex flex-col gap-4 sm:gap-6">
+            <main className="relative z-10 max-w-4xl mx-auto px-4 py-6 sm:px-6 sm:py-10 flex flex-col gap-5 sm:gap-6 pt-20 sm:pt-24">
 
                 {/* Match header card (Scoreboard) */}
                 <MatchScoreboard 
@@ -795,224 +830,268 @@ export default function MatchDetailPage() {
                     rightSecondaryId={rightSecondaryId}
                     leftSetsWon={leftSetsWon}
                     rightSetsWon={rightSetsWon}
+                    currentSetNumber={currentSetNumber}
+                    currentLeftScore={currentLeftScore}
+                    currentRightScore={currentRightScore}
                     leftIsWinner={leftIsWinner}
                     rightIsWinner={rightIsWinner}
                     onQuit={() => router.push("/dashboard")}
                 />
 
-                {isOngoing && connectionState !== "live" && (
-                    <div className={`rounded-2xl border px-4 py-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between ${
-                        connectionState === "offline"
-                            ? "border-orange-500/30 bg-orange-500/10"
-                            : "border-blue-500/30 bg-blue-500/10"
-                    }`}>
-                        <div>
-                            <p className={`text-sm font-black ${
-                                connectionState === "offline" ? "text-orange-300" : "text-blue-300"
-                            }`}>
-                                {connectionState === "offline" ? "You are offline" : "Reconnecting to live updates"}
-                            </p>
-                            <p className="text-xs text-zinc-400 mt-1">
-                                {connectionState === "offline"
-                                    ? "This page can still show the match score, but live updates and presence checks are paused until your internet returns."
-                                    : `${connectionSummary}. We are trying to restore the live connection now.`}
-                            </p>
-                        </div>
-                        <span className={`text-[11px] font-bold uppercase tracking-[0.2em] ${
-                            connectionState === "offline" ? "text-orange-400" : "text-blue-400"
+                <MatchActionCenter
+                    viewerMode={viewerMode}
+                    matchModeLabel={matchModeLabel}
+                    isOngoing={isOngoing}
+                    isCompleted={isCompleted}
+                    isPending={isPending}
+                    hasReferee={hasReferee}
+                    canAcceptMatch={canAcceptMatch}
+                    hasAccepted={hasAccepted}
+                    canStart={canStart}
+                    canOpenRefereeConsole={isOngoing && isReferee}
+                    canInviteReferee={canInviteRefereeNow}
+                    tournamentId={match.tournament_id}
+                    currentSetNumber={currentSetNumber}
+                    currentLeftScore={currentLeftScore}
+                    currentRightScore={currentRightScore}
+                    actionLoading={actionLoading}
+                    onAccept={handleAcceptMatch}
+                    onStart={handleStartMatch}
+                    onInviteReferee={() => setShowInviteReferee(true)}
+                    onOpenRefereeConsole={() => router.push(`/matches/${matchId}/referee`)}
+                    onOpenTournament={() => {
+                        if (match.tournament_id) router.push(`/tournaments/${match.tournament_id}`);
+                    }}
+                    onBackToMatches={() => router.push("/matches")}
+                />
+
+                <div className="grid grid-cols-1 gap-5">
+                    {isOngoing && connectionState !== "live" && (
+                        <div className={`rounded-2xl border px-5 py-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between backdrop-blur-md ${
+                            connectionState === "offline"
+                                ? "border-rose-500/30 bg-rose-500/10"
+                                : "border-amber-500/30 bg-amber-500/10"
                         }`}>
-                            {connectionState === "offline" ? "Offline" : "Reconnecting"}
-                        </span>
-                    </div>
-                )}
-
-                {/* Invalidated banner */}
-                {isInvalidated && (
-                    <div className="bg-red-500/10 border border-red-500/30 rounded-2xl p-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-                        <span className="text-2xl">🚫</span>
-                        <div>
-                            <p className="font-black text-red-400 text-sm">Match Invalidated</p>
-                            <p className="text-xs text-red-400/70 mt-1">
-                                This match was voided before completion. No ratings or records will be affected.
-                            </p>
-                        </div>
-                        <button
-                            onClick={() => router.push("/dashboard")}
-                            className="inline-flex items-center justify-center rounded-xl border border-red-400/20 bg-red-500/10 px-5 py-2.5 text-xs font-black uppercase tracking-widest text-red-100 transition-colors hover:bg-red-500/20 sm:self-center"
-                        >
-                            Quit
-                        </button>
-                    </div>
-                )}
-
-                {isOngoing && presence?.auto_invalidate_enabled && (
-                    <MatchPresenceCard
-                        match={match}
-                        presence={presence}
-                        playerProfiles={playerProfiles}
-                        isConnectedUser={isConnectedUser}
-                    />
-                )}
-
-                {/* Acceptance Section */}
-                {isPending && isParticipant && (
-                    <div className="bg-zinc-900 border border-white/10 rounded-3xl p-6 flex flex-col gap-6">
-                        <div className="flex items-center justify-between border-b border-white/5 pb-4">
-                            <div>
-                                <h3 className="font-black text-white text-sm uppercase tracking-widest">Match Acceptance</h3>
-                                <p className="text-[10px] text-zinc-500 font-bold uppercase mt-1 tracking-wider">
-                                    {allAccepted ? "Ready to begin!" : "Waiting for all players to confirm"}
+                            <div className="min-w-0">
+                                <p className={`text-xs font-black uppercase tracking-widest ${
+                                    connectionState === "offline" ? "text-rose-400" : "text-amber-400"
+                                }`}>
+                                    {connectionState === "offline" ? "SIGNAL LOST" : "RECONNECTING"}
+                                </p>
+                                <p className="text-[10px] text-zinc-500 font-medium mt-1 leading-relaxed">
+                                    {connectionState === "offline"
+                                        ? "Live telemetry paused. Re-establish network link to resume sync."
+                                        : "Attempting to synchronize with match server..."}
                                 </p>
                             </div>
-                            <div className="flex -space-x-2">
-                                {[match.player1_id, match.player2_id, match.player3_id, match.player4_id].filter(Boolean).map(pid => {
-                                    const acc = acceptances.find(a => a.user_id === pid);
-                                    const accepted = acc?.decision === "accepted";
-                                    return (
-                                        <div key={pid} className={`w-8 h-8 rounded-full border-2 ${accepted ? "border-emerald-500 bg-emerald-500/20" : "border-zinc-800 bg-zinc-800"} flex items-center justify-center relative`}>
-                                            <span className="text-[10px] font-black text-white">{name(pid)[1]?.toUpperCase()}</span>
-                                            {accepted && (
-                                                <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full border-2 border-zinc-900 flex items-center justify-center">
-                                                    <svg className="w-2 h-2 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={4} d="M5 13l4 4L19 7" /></svg>
+                            <span className="shrink-0 text-[10px] font-black italic text-white opacity-20">PROTOCOL {connectionState === "offline" ? "00-0" : "01-A"}</span>
+                        </div>
+                    )}
+
+                    {/* Invalidated banner */}
+                    {isInvalidated && (
+                        <div className="bg-rose-500/10 border border-rose-500/30 rounded-[2rem] p-6 flex items-center gap-6 shadow-xl">
+                            <div className="w-12 h-12 rounded-xl bg-rose-500/20 flex items-center justify-center text-xl shrink-0">🚫</div>
+                            <div className="flex-1 min-w-0">
+                                <p className="font-black text-rose-400 text-xs uppercase tracking-[0.2em]">Match Invalidated</p>
+                                <p className="text-[10px] text-rose-400/60 mt-1 uppercase italic leading-tight">
+                                    Voided before completion. Intelligence records unaffected.
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => router.push("/dashboard")}
+                                className="px-5 py-2.5 bg-rose-500 text-black text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-rose-400 transition-colors"
+                            >
+                                QUIT
+                            </button>
+                        </div>
+                    )}
+
+                    {isOngoing && presence?.auto_invalidate_enabled && (
+                        <MatchPresenceCard
+                            match={match}
+                            presence={presence}
+                            playerProfiles={playerProfiles}
+                            isConnectedUser={isConnectedUser}
+                        />
+                    )}
+
+                    {/* Acceptance Section */}
+                    {isPending && isParticipant && (
+                        <div className="bg-[#0a111a]/80 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 sm:p-8 flex flex-col gap-6 shadow-2xl">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/5 pb-6">
+                                <div className="space-y-1">
+                                    <h3 className="font-black text-white text-[10px] uppercase tracking-[0.3em]">Engagement Protocol</h3>
+                                    <p className="text-[10px] text-cyan-500 font-black uppercase italic tracking-widest">
+                                        {allAccepted ? "STATION READY" : "AWAITING CLEARANCE"}
+                                    </p>
+                                </div>
+                                <div className="flex -space-x-3">
+                                    {[match.player1_id, match.player2_id, match.player3_id, match.player4_id].filter(Boolean).map(pid => {
+                                        const acc = acceptances.find(a => a.user_id === pid);
+                                        const accepted = acc?.decision === "accepted";
+                                        return (
+                                            <div key={pid} className={`w-10 h-10 rounded-xl border-2 transition-all ${accepted ? "border-cyan-500 bg-cyan-500/20 scale-105 z-10" : "border-zinc-800 bg-zinc-900"} flex items-center justify-center relative overflow-hidden`}>
+                                                <span className="text-xs font-black text-white italic">{name(pid)[1]?.toUpperCase()}</span>
+                                                {accepted && (
+                                                    <div className="absolute inset-0 bg-cyan-500/10 animate-pulse" />
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {!hasAccepted && (
+                                <div className="flex flex-col sm:flex-row gap-3">
+                                    <button
+                                        onClick={handleAcceptMatch}
+                                        disabled={actionLoading}
+                                        className="flex-1 bg-white text-black text-[10px] font-black uppercase tracking-[0.2em] py-4 rounded-xl transition-all hover:bg-cyan-50 active:scale-95 disabled:opacity-50 shadow-xl"
+                                    >
+                                        Accept Engagement
+                                    </button>
+                                    <button
+                                        onClick={() => { /* handle reject? */ }}
+                                        className="px-8 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 text-[10px] font-black uppercase tracking-[0.2em] py-4 rounded-xl transition-all active:scale-95"
+                                    >
+                                        Abort
+                                    </button>
+                                </div>
+                            )}
+
+                            {hasAccepted && !allAccepted && (
+                                <div className="text-center py-4 bg-white/5 rounded-xl border border-white/5 border-dashed">
+                                    <p className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] animate-pulse italic">Synchronizing Fleet Decisions...</p>
+                                </div>
+                            )}
+
+                            {canStart && (
+                                <div className="flex flex-col gap-4">
+                                    <div className="p-4 bg-cyan-500/10 border border-cyan-500/20 rounded-xl text-center">
+                                        <p className="text-[10px] font-black text-cyan-400 uppercase tracking-widest italic">All Operators Active & Synced</p>
+                                    </div>
+                                    <button
+                                        onClick={handleStartMatch}
+                                        disabled={actionLoading}
+                                        className="w-full bg-white text-black text-[10px] font-black uppercase tracking-[0.2em] py-4 rounded-xl transition-transform hover:scale-[1.02] active:scale-[0.98] shadow-2xl italic"
+                                    >
+                                        INITIALIZE ENGAGEMENT →
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Referee Assignment Section */}
+                    {((isOngoing || match.status === "pending" || match.status === "pending_approval") && !hasReferee && isParticipant) && (
+                        <div className="relative overflow-hidden bg-[#0a111a]/80 backdrop-blur-xl border border-amber-500/20 rounded-[2rem] p-6 sm:p-8 shadow-2xl">
+                            <div className="absolute top-0 right-0 p-6 text-2xl opacity-5 pointer-events-none">⚖️</div>
+                            <div className="relative z-10 flex flex-col sm:flex-row items-center gap-6">
+                                <div className="w-14 h-14 bg-amber-500/10 rounded-2xl flex items-center justify-center text-2xl shrink-0 shadow-inner border border-amber-500/10">
+                                    📡
+                                </div>
+                                <div className="flex-1 text-center sm:text-left space-y-1">
+                                    <h3 className="text-xs font-black text-amber-400 uppercase tracking-[0.2em]">Referee Required</h3>
+                                    <p className="text-[10px] text-slate-500 font-medium leading-relaxed max-w-sm uppercase italic">
+                                        {match.match_format === "singles" 
+                                            ? "Engagement requires overseer validation. Request tactical support to log points."
+                                            : "Deployment locked. Assign a referee to initialize official telemetry."}
+                                    </p>
+                                </div>
+                                <button
+                                    onClick={() => setShowInviteReferee(true)}
+                                    className="w-full sm:w-auto px-8 py-3.5 bg-amber-500 text-black font-black text-[10px] uppercase tracking-widest rounded-xl hover:scale-105 transition-all active:scale-95 shadow-xl italic"
+                                >
+                                    INVITE OVERSEER
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Match announcement log */}
+                    {matchLog.length > 0 && (
+                        <div className="bg-[#0a111a]/40 backdrop-blur-sm border border-white/5 rounded-2xl p-5 flex flex-col gap-3">
+                            <p className="text-[9px] font-black tracking-[0.4em] text-slate-600 uppercase">Mission Log Feed</p>
+                            <div className="space-y-2 max-h-32 overflow-y-auto pr-2 custom-scrollbar">
+                                {matchLog.map(entry => (
+                                    <div key={entry.id} className="flex items-start gap-3 group">
+                                        <span className="text-cyan-500/40 text-[9px] font-black italic mt-0.5 shrink-0 group-hover:text-cyan-500 transition-colors">
+                                            {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                        </span>
+                                        <span className="text-[11px] text-slate-400 font-medium uppercase tracking-tight">{entry.message}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Sets Display Card */}
+                    {sets.length > 0 && (
+                        <div className="bg-[#0a111a]/80 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 sm:p-8 shadow-2xl">
+                            <div className="flex items-center justify-between border-b border-white/5 pb-5 mb-6">
+                                <div className="space-y-1">
+                                    <h2 className="text-[10px] font-black tracking-[0.3em] text-slate-500 uppercase">Engagement Record</h2>
+                                    <p className="text-[9px] font-black text-cyan-500 uppercase tracking-widest italic opacity-60">Real-time Telemetry</p>
+                                </div>
+                                <div className="flex gap-4 text-[9px] font-black text-slate-600 uppercase tracking-widest">
+                                    <span className="w-12 text-center">ALPHA</span>
+                                    <span className="w-12 text-center">BRAVO</span>
+                                </div>
+                            </div>
+                            <div className="space-y-4">
+                                {sets.map(set => (
+                                    <div key={set.set_number} className="flex items-center justify-between gap-4 p-2 rounded-2xl hover:bg-white/[0.02] transition-colors group/set">
+                                        <div className="flex flex-col">
+                                            <span className="text-[10px] font-black text-slate-500 uppercase tracking-tighter">Cycle {set.set_number}</span>
+                                            <div className="h-0.5 w-4 bg-white/10 mt-1 group-hover/set:w-8 transition-all" />
+                                        </div>
+                                        
+                                        <div className="flex items-center gap-4 sm:gap-6">
+                                            {canScore ? (
+                                                <div className="flex items-center gap-4">
+                                                    <ScoreInput
+                                                        value={shouldSwapSinglesSides ? set.player2_score : set.player1_score}
+                                                        onChange={v => handleUpdateScore(set.set_number, shouldSwapSinglesSides ? "player2_score" : "player1_score", v)}
+                                                    />
+                                                    <span className="text-slate-800 font-black italic">VS</span>
+                                                    <ScoreInput
+                                                        value={shouldSwapSinglesSides ? set.player1_score : set.player2_score}
+                                                        onChange={v => handleUpdateScore(set.set_number, shouldSwapSinglesSides ? "player1_score" : "player2_score", v)}
+                                                    />
+                                                </div>
+                                            ) : (
+                                                <div className="flex items-center gap-8">
+                                                    <span className={`text-3xl sm:text-4xl font-black tabular-nums italic ${
+                                                        (shouldSwapSinglesSides ? set.player2_score : set.player1_score) > (shouldSwapSinglesSides ? set.player1_score : set.player2_score) 
+                                                            ? "text-white" : "text-slate-700"
+                                                    }`}>
+                                                        {shouldSwapSinglesSides ? set.player2_score : set.player1_score}
+                                                    </span>
+                                                    <span className="text-slate-800 font-black italic">/</span>
+                                                    <span className={`text-3xl sm:text-4xl font-black tabular-nums italic ${
+                                                        (shouldSwapSinglesSides ? set.player1_score : set.player2_score) > (shouldSwapSinglesSides ? set.player2_score : set.player1_score) 
+                                                            ? "text-white" : "text-slate-700"
+                                                    }`}>
+                                                        {shouldSwapSinglesSides ? set.player1_score : set.player2_score}
+                                                    </span>
                                                 </div>
                                             )}
                                         </div>
-                                    );
-                                })}
+                                    </div>
+                                ))}
                             </div>
-                        </div>
-
-                        {!hasAccepted && (
-                            <div className="flex gap-3">
+                            {canScore && (
                                 <button
-                                    onClick={handleAcceptMatch}
-                                    disabled={actionLoading}
-                                    className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-4 rounded-2xl transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50"
+                                    onClick={handleAddSet}
+                                    className="mt-8 w-full py-3.5 border border-white/5 hover:border-cyan-500/30 bg-white/[0.02] hover:bg-cyan-500/5 text-[10px] font-black text-slate-500 hover:text-cyan-400 uppercase tracking-[0.2em] rounded-xl transition-all italic"
                                 >
-                                    Accept Match
+                                    + INITIALIZE NEW CYCLE
                                 </button>
-                                <button
-                                    onClick={() => { /* handle reject? */ }}
-                                    className="px-6 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 font-black rounded-2xl transition-all"
-                                >
-                                    Decline
-                                </button>
-                            </div>
-                        )}
-
-                        {hasAccepted && !allAccepted && (
-                            <div className="text-center py-2 bg-zinc-800/50 rounded-xl">
-                                <p className="text-xs font-bold text-zinc-400 animate-pulse">Waiting for other players...</p>
-                            </div>
-                        )}
-
-                        {canStart && (
-                            <div className="flex flex-col gap-4">
-                                <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-center">
-                                    <p className="text-xs font-bold text-emerald-400">All players have accepted!</p>
-                                </div>
-                                <button
-                                    onClick={handleStartMatch}
-                                    disabled={actionLoading}
-                                    className="w-full bg-white text-black font-black py-4 rounded-2xl transition-transform hover:scale-[1.02] active:scale-[0.98] shadow-xl"
-                                >
-                                    Start Match Now
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {/* Referee Assignment Section */}
-                {((isOngoing || match.status === "pending" || match.status === "pending_approval") && !hasReferee && isParticipant) && (
-                    <div className="relative overflow-hidden bg-gradient-to-br from-amber-500/10 to-orange-500/5 border border-amber-500/20 rounded-3xl p-6 sm:p-8">
-                        <div className="relative z-10 flex flex-col sm:flex-row items-center gap-6">
-                            <div className="w-16 h-16 bg-amber-500/10 rounded-2xl flex items-center justify-center text-3xl shrink-0 shadow-inner border border-amber-500/10">
-                                ⚖️
-                            </div>
-                            <div className="flex-1 text-center sm:text-left">
-                                <h3 className="text-lg font-black text-amber-400 mb-1">Official Referee Needed</h3>
-                                <p className="text-xs text-amber-400/60 font-medium leading-relaxed max-w-sm">
-                                    {match.match_format === "singles" 
-                                        ? "Solo matches require a referee to verify points and ensure fair play. Invite someone to start the official scoring."
-                                        : isOngoing 
-                                            ? "Scoring is currently locked. An assigned referee is required to record points for this match."
-                                            : "Invite a referee now so they can be ready to start the match with you."}
-                                </p>
-                            </div>
-                            <button
-                                onClick={() => setShowInviteReferee(true)}
-                                className="w-full sm:w-auto px-8 py-3 bg-amber-500 text-black font-black text-xs uppercase tracking-widest rounded-xl hover:scale-[1.02] transition-transform active:scale-[0.98] shadow-lg shadow-amber-500/20"
-                            >
-                                Invite Referee
-                            </button>
+                            )}
                         </div>
-                        {/* Decorative background element */}
-                        <div className="absolute top-0 right-0 -translate-y-1/2 translate-x-1/3 w-32 h-32 bg-amber-500/10 blur-3xl rounded-full" />
-                    </div>
-                )}
-
-                {/* Match announcement log */}
-                {matchLog.length > 0 && (
-                    <div className="bg-zinc-900/60 border border-white/5 rounded-2xl p-4 flex flex-col gap-2">
-                        <p className="text-xs font-bold tracking-[0.3em] text-zinc-600 uppercase mb-1">Match Log</p>
-                        {matchLog.map(entry => (
-                            <div key={entry.id} className="flex items-start gap-3 text-sm">
-                                <span className="text-zinc-600 text-xs mt-0.5 shrink-0">
-                                    {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                                </span>
-                                <span className="text-zinc-300">{entry.message}</span>
-                            </div>
-                        ))}
-                    </div>
-                )}
-
-                {/* Sets */}
-                {sets.length > 0 && (
-                    <div className="bg-zinc-900 border border-white/10 rounded-2xl p-4 sm:p-6">
-                        <div className="flex flex-col gap-3 mb-5 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-                            <h2 className="text-xs font-bold tracking-[0.3em] text-zinc-500 uppercase">Sets</h2>
-                            <div className="grid grid-cols-2 gap-3 text-xs text-zinc-600 min-w-0 w-full sm:w-auto sm:flex sm:gap-6">
-                                <span className="truncate text-left">{isDoubles ? "Team 1" : leftSideName}</span>
-                                <span className="truncate text-right">{isDoubles ? "Team 2" : rightSideName}</span>
-                            </div>
-                        </div>
-                        <div className="flex flex-col gap-4">
-                            {sets.map(set => (
-                                <div key={set.set_number} className="flex items-center justify-between gap-2 sm:gap-4">
-                                    <span className="text-xs text-zinc-600 w-11 shrink-0 sm:w-12">Set {set.set_number}</span>
-                                    {canScore ? (
-                                        <>
-                                            <ScoreInput
-                                                value={shouldSwapSinglesSides ? set.player2_score : set.player1_score}
-                                                onChange={v => handleUpdateScore(set.set_number, shouldSwapSinglesSides ? "player2_score" : "player1_score", v)}
-                                            />
-                                            <span className="text-zinc-600 font-bold">—</span>
-                                            <ScoreInput
-                                                value={shouldSwapSinglesSides ? set.player1_score : set.player2_score}
-                                                onChange={v => handleUpdateScore(set.set_number, shouldSwapSinglesSides ? "player1_score" : "player2_score", v)}
-                                            />
-                                        </>
-                                    ) : (
-                                        <>
-                                            <span className="text-2xl font-black w-12 text-center">{shouldSwapSinglesSides ? set.player2_score : set.player1_score}</span>
-                                            <span className="text-zinc-600 font-bold">—</span>
-                                            <span className="text-2xl font-black w-12 text-center">{shouldSwapSinglesSides ? set.player1_score : set.player2_score}</span>
-                                        </>
-                                    )}
-                                </div>
-                            ))}
-                        </div>
-                        {canScore && (
-                            <button
-                                onClick={handleAddSet}
-                                className="mt-5 text-xs text-zinc-500 hover:text-zinc-300 border border-white/5 hover:border-white/10 px-3 py-1.5 rounded-lg transition-colors"
-                            >
-                                + Add Set
-                            </button>
-                        )}
-                    </div>
-                )}
+                    )}
+                </div>
 
                 {error && <p className="text-red-400 text-sm">{error}</p>}
 
@@ -1045,7 +1124,7 @@ export default function MatchDetailPage() {
                             </div>
                             <input
                                 type="text"
-                                placeholder="Search by username…"
+                                placeholder="Search by name…"
                                 value={refereeSearch}
                                 onChange={e => setRefereeSearch(e.target.value)}
                                 className="bg-zinc-800 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-cyan-500/50"
@@ -1058,8 +1137,7 @@ export default function MatchDetailPage() {
                                             onClick={() => handleInviteReferee(p.id)}
                                             className="flex items-center gap-3 px-3 py-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-left transition-colors"
                                         >
-                                            <span className="text-sm font-semibold text-white">@{p.username}</span>
-                                            <span className="text-xs text-zinc-500 ml-auto">{p.first_name} {p.last_name}</span>
+                                            <span className="text-sm font-semibold text-white">{p.first_name} {p.last_name}</span>
                                         </button>
                                     ))}
                                 </div>
@@ -1321,36 +1399,39 @@ function MatchPresenceCard({
     const formatName = (id: string | null) => {
         if (!id) return "Unknown";
         const profile = playerProfiles[id];
-        return profile ? `@${profile.username}` : `@${id.slice(0, 8)}`;
+        return profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || id.slice(0, 8) : id.slice(0, 8);
     };
 
     const isDoubles = match.match_format === "doubles";
 
     return (
-        <div className="bg-zinc-900 border border-white/10 rounded-3xl p-6 flex flex-col gap-6">
-            <div className="flex items-center justify-between border-b border-white/5 pb-4">
+        <div className="bg-[#0a111a]/80 backdrop-blur-xl border border-white/10 rounded-[2rem] p-6 flex flex-col gap-6 shadow-xl relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-4 opacity-5 pointer-events-none text-2xl">📡</div>
+            
+            <div className="flex items-center justify-between border-b border-white/5 pb-5">
                 <div>
-                    <h3 className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em]">Match Presence</h3>
-                    <p className="text-sm font-bold text-white mt-1">
-                        {presence.connected_player_ids.length}/{presence.total_players} Players Online
-                    </p>
+                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">Presence Sync</h3>
+                    <div className="flex items-baseline gap-2 mt-1">
+                        <span className="text-xl font-black text-white">{presence.connected_player_ids.length}</span>
+                        <span className="text-[10px] font-black text-slate-600 uppercase tracking-widest">/ {presence.total_players} Operators Online</span>
+                    </div>
                 </div>
-                <div className="flex items-center gap-2 px-3 py-1 bg-zinc-800 rounded-full">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Live Syncing</span>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shadow-[0_0_8px_rgba(16,185,129,1)]" />
+                    <span className="text-[9px] font-black text-emerald-400 uppercase tracking-widest italic">Encrypted Feed</span>
                 </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <PresenceGroup 
-                    label="Team 1" 
+                    label="Alpha Team" 
                     players={[
                         { id: match.player1_id, connected: isConnectedUser(match.player1_id), name: formatName(match.player1_id) },
                         ...(isDoubles ? [{ id: match.player3_id, connected: isConnectedUser(match.player3_id), name: formatName(match.player3_id) }] : [])
                     ]}
                 />
                 <PresenceGroup 
-                    label="Team 2" 
+                    label="Bravo Team" 
                     players={[
                         { id: match.player2_id, connected: isConnectedUser(match.player2_id), name: formatName(match.player2_id) },
                         ...(isDoubles ? [{ id: match.player4_id, connected: isConnectedUser(match.player4_id), name: formatName(match.player4_id) }] : [])
@@ -1360,13 +1441,13 @@ function MatchPresenceCard({
 
             {presence.referee_id && (
                 <div className="pt-4 border-t border-white/5">
-                    <div className={`flex items-center justify-between p-4 rounded-2xl border ${presence.referee_connected ? "bg-emerald-500/5 border-emerald-500/10" : "bg-red-500/5 border-red-500/10"}`}>
+                    <div className={`flex items-center justify-between p-4 rounded-xl border transition-colors ${presence.referee_connected ? "bg-cyan-500/5 border-cyan-500/10" : "bg-rose-500/5 border-rose-500/10"}`}>
                         <div className="flex items-center gap-3">
-                            <div className={`w-2 h-2 rounded-full ${presence.referee_connected ? "bg-emerald-500" : "bg-red-500"}`} />
-                            <span className="text-xs font-black text-zinc-300 uppercase tracking-widest">Referee: {formatName(presence.referee_id)}</span>
+                            <div className={`w-2 h-2 rounded-full ${presence.referee_connected ? "bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,1)]" : "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,1)]"}`} />
+                            <span className={`text-[10px] font-black uppercase tracking-widest ${presence.referee_connected ? "text-cyan-400" : "text-rose-400"}`}>Overseer: {formatName(presence.referee_id)}</span>
                         </div>
-                        <span className={`text-[9px] font-black uppercase tracking-widest ${presence.referee_connected ? "text-emerald-500" : "text-red-500"}`}>
-                            {presence.referee_connected ? "Present" : "Away"}
+                        <span className={`text-[8px] font-black uppercase tracking-[0.2em] ${presence.referee_connected ? "text-cyan-500" : "text-rose-500"}`}>
+                            {presence.referee_connected ? "Stationed" : "Signal Lost"}
                         </span>
                     </div>
                 </div>
@@ -1377,13 +1458,14 @@ function MatchPresenceCard({
 
 function PresenceGroup({ label, players }: { label: string; players: { id: string | null; connected: boolean; name: string }[] }) {
     return (
-        <div className="space-y-2">
-            <span className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">{label}</span>
-            <div className="space-y-1.5">
+        <div className="space-y-3">
+            <span className="text-[9px] font-black text-slate-600 uppercase tracking-[0.3em] ml-1">{label}</span>
+            <div className="space-y-2">
                 {players.map((p, i) => (
-                    <div key={p.id || i} className={`flex items-center gap-3 p-3 rounded-xl border ${p.connected ? "bg-emerald-500/5 border-emerald-500/10 text-emerald-200" : "bg-red-500/5 border-red-500/10 text-red-200"}`}>
-                        <div className={`w-1.5 h-1.5 rounded-full ${p.connected ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"}`} />
-                        <span className="text-xs font-bold truncate">{p.name}</span>
+                    <div key={p.id || i} className={`group flex items-center gap-4 p-3 rounded-xl border transition-all ${p.connected ? "bg-white/5 border-white/5" : "bg-rose-500/5 border-rose-500/10 opacity-60"}`}>
+                        <div className={`w-1.5 h-1.5 rounded-full transition-shadow duration-500 ${p.connected ? "bg-emerald-500 shadow-[0_0_10px_rgba(16,185,129,0.4)]" : "bg-rose-500 shadow-[0_0_10px_rgba(244,63,94,0.4)]"}`} />
+                        <span className={`text-xs font-black uppercase italic tracking-tight truncate ${p.connected ? "text-white" : "text-rose-400"}`}>{p.name}</span>
+                        {p.connected && <span className="ml-auto text-[7px] font-black text-emerald-500/40 uppercase tracking-widest group-hover:text-emerald-500 transition-colors">Connected</span>}
                     </div>
                 ))}
             </div>
@@ -1391,27 +1473,6 @@ function PresenceGroup({ label, players }: { label: string; players: { id: strin
     );
 }
 
-function ConnectionBadge({ connectionState }: { connectionState: MatchConnectionState }) {
-    if (connectionState === "offline") {
-        return (
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-orange-500/10 text-orange-400 border border-orange-500/30">
-                Offline
-            </span>
-        );
-    }
-    if (connectionState === "reconnecting") {
-        return (
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/30">
-                Reconnecting
-            </span>
-        );
-    }
-    return (
-        <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-            Connected
-        </span>
-    );
-}
 
 function StatusBadge({ status }: { status: string }) {
     const map: Record<string, string> = {
@@ -1488,17 +1549,19 @@ function TeamSlot({
 
 function ScoreInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
     return (
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2 bg-white/5 p-1 rounded-xl border border-white/5">
             <button
                 onClick={() => onChange(Math.max(0, value - 1))}
-                className="w-8 h-8 rounded-lg border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white transition-colors text-lg leading-none"
+                className="w-10 h-10 rounded-lg bg-zinc-800 border border-white/5 hover:border-rose-500/30 hover:bg-rose-500/10 text-zinc-400 hover:text-rose-400 transition-all text-xl font-black leading-none active:scale-90"
             >
                 −
             </button>
-            <span className="w-10 text-center text-xl font-black">{value}</span>
+            <div className="w-14 text-center">
+                <span className="text-2xl font-black tabular-nums italic text-white">{value}</span>
+            </div>
             <button
                 onClick={() => onChange(value + 1)}
-                className="w-8 h-8 rounded-lg border border-white/10 hover:border-white/20 text-zinc-400 hover:text-white transition-colors text-lg leading-none"
+                className="w-10 h-10 rounded-lg bg-zinc-800 border border-white/5 hover:border-emerald-500/30 hover:bg-emerald-500/10 text-zinc-400 hover:text-emerald-400 transition-all text-xl font-black leading-none active:scale-90"
             >
                 +
             </button>
@@ -1508,7 +1571,7 @@ function ScoreInput({ value, onChange }: { value: number; onChange: (v: number) 
 
 function MatchScoreboard({ 
     match, playerProfiles, isCompleted, isWinner, isDoubles,
-    connectionState, leftPrimaryId, leftSecondaryId, rightPrimaryId, rightSecondaryId, leftSetsWon, rightSetsWon, leftIsWinner, rightIsWinner, onQuit
+    connectionState, leftPrimaryId, leftSecondaryId, rightPrimaryId, rightSecondaryId, leftSetsWon, rightSetsWon, currentSetNumber, currentLeftScore, currentRightScore, leftIsWinner, rightIsWinner, onQuit
 }: { 
     match: MatchData; playerProfiles: Record<string, PlayerProfile>;
     isCompleted: boolean; isWinner: boolean;
@@ -1520,164 +1583,244 @@ function MatchScoreboard({
     rightSecondaryId: string | null;
     leftSetsWon: number;
     rightSetsWon: number;
+    currentSetNumber: number;
+    currentLeftScore: number;
+    currentRightScore: number;
     leftIsWinner: boolean;
     rightIsWinner: boolean;
     onQuit: () => void;
 }) {
     const meta = SPORTS_META[match.sport] || SPORTS_META.pickleball;
+    const humanize = (value: string | null | undefined) => {
+        if (!value) return "Unknown";
+        return value
+            .replace(/_/g, " ")
+            .replace(/\b\w/g, (char) => char.toUpperCase());
+    };
     const getName = (id: string | null) => {
         if (!id) return "—";
         const p = playerProfiles[id];
-        return p ? `@${p.username}` : "…";
+        return p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() || id.slice(0, 8) : "…";
     };
 
-    return (
-        <div className="relative overflow-hidden bg-zinc-900 border border-white/10 rounded-[2.5rem] shadow-2xl">
-            {/* Dynamic Background Effects */}
-            <div className={`absolute -top-24 -left-24 w-80 h-80 ${meta.bg} blur-[120px] rounded-full opacity-50`} />
-            <div className={`absolute -bottom-24 -right-24 w-80 h-80 ${meta.bg} blur-[120px] rounded-full opacity-50`} />
-            <div className="absolute inset-0 bg-gradient-to-b from-white/[0.02] to-transparent pointer-events-none" />
+    const matchTitle = match.tournament_id
+        ? "Tournament Match"
+        : match.match_type === "ranked"
+            ? "Ranked Match"
+            : match.match_type === "queue"
+                ? "Normal Match"
+            : humanize(match.match_type);
+    const formatLabel = humanize(match.match_format);
+    const connectionMeta = connectionState === "live"
+        ? {
+            value: "Telemetry Live",
+            secondary: "Real-time channel secured",
+            chipClass: "border-emerald-500/20 bg-emerald-500/10 text-emerald-300",
+            tone: "success" as const,
+        }
+        : connectionState === "reconnecting"
+            ? {
+                value: "Resyncing",
+                secondary: "Re-establishing live feed",
+                chipClass: "border-amber-500/20 bg-amber-500/10 text-amber-300",
+                tone: "warning" as const,
+            }
+            : {
+                value: "Offline",
+                secondary: "Waiting for network recovery",
+                chipClass: "border-rose-500/20 bg-rose-500/10 text-rose-300",
+                tone: "danger" as const,
+            };
+    const refereeLabel = match.referee_id ? getName(match.referee_id) : "Pending assignment";
+    const alphaPlayers = [
+        { slot: isDoubles ? "Lead Player" : "Competitor", name: getName(leftPrimaryId) },
+        ...(isDoubles ? [{ slot: "Support Player", name: getName(leftSecondaryId) }] : []),
+    ];
+    const bravoPlayers = [
+        { slot: isDoubles ? "Lead Player" : "Competitor", name: getName(rightPrimaryId) },
+        ...(isDoubles ? [{ slot: "Support Player", name: getName(rightSecondaryId) }] : []),
+    ];
+    const liveDetailLabel = isCompleted ? "Result Snapshot" : match.status === "ongoing" ? "Live Detail" : "Match Detail";
 
-            <div className="relative z-10 p-6 sm:p-10 flex flex-col gap-8 sm:gap-12">
+    return (
+        <div className="relative overflow-hidden bg-[#0a111a]/95 backdrop-blur-xl border border-white/10 rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl">
+            {/* Tactical Grid Background */}
+            <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)", backgroundSize: "20px 20px" }} />
+            
+            {/* Dynamic Background Effects */}
+            <div className={`absolute -top-24 -left-24 w-80 h-80 ${meta.bg} blur-[100px] rounded-full opacity-30`} />
+            <div className={`absolute -bottom-24 -right-24 w-80 h-80 ${meta.bg} blur-[100px] rounded-full opacity-30`} />
+
+            <div className="relative z-10 p-5 sm:p-8 lg:p-9 flex flex-col gap-5 sm:gap-6">
                 {/* Header Section */}
-                <div className="flex items-center justify-between border-b border-white/5 pb-6 sm:pb-8">
-                    <div className="flex items-center gap-4">
-                        <div className={`w-14 h-14 shrink-0 ${meta.bg} rounded-[1.25rem] flex items-center justify-center text-3xl shadow-inner border border-white/5`}>
-                            {meta.emoji}
-                        </div>
-                        <div>
-                            <h2 className={`font-black text-xl sm:text-2xl tracking-tight ${meta.color}`}>{meta.label}</h2>
-                            <div className="flex items-center gap-2 mt-0.5">
-                                <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.2em]">
-                                    {match.match_type.replace("_", " ")}
-                                </span>
-                                <span className="w-1 h-1 rounded-full bg-zinc-800" />
-                                <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.2em]">
-                                    {match.match_format.replace("_", " ")}
-                                </span>
+                <div className="flex flex-col gap-4 border-b border-white/5 pb-5 sm:pb-6 md:flex-row md:items-start md:justify-between">
+                    <div className="flex items-start gap-3 sm:gap-5">
+                        <div className="relative group shrink-0">
+                            <div className={`absolute inset-0 ${meta.bg} blur-xl rounded-xl sm:rounded-2xl opacity-50 group-hover:opacity-80 transition-opacity`} />
+                            <div className={`relative w-12 h-12 sm:w-16 sm:h-16 shrink-0 ${meta.bg} rounded-xl sm:rounded-2xl flex items-center justify-center text-2xl sm:text-3xl shadow-2xl border border-white/10`}>
+                                {meta.emoji}
                             </div>
                         </div>
+                        <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 mb-1.5">
+                                <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] ${meta.color}`}>{meta.label}</span>
+                                <span className="w-1 h-1 rounded-full bg-zinc-800" />
+                                <span className="text-[8px] sm:text-[10px] text-zinc-500 font-black uppercase tracking-[0.2em] sm:tracking-[0.3em]">{formatLabel}</span>
+                            </div>
+                            <h2 className="font-black text-lg sm:text-2xl text-white italic tracking-tighter uppercase leading-none">
+                                {matchTitle}
+                            </h2>
+                            <p className="mt-2 text-[10px] sm:text-xs text-slate-400/80 font-semibold uppercase tracking-[0.18em] sm:tracking-[0.24em]">
+                                {isDoubles ? "2 vs 2 lineup board" : "Head-to-head lineup board"}
+                            </p>
+                        </div>
                     </div>
-                    <div className="flex flex-col items-end gap-2">
+                    <div className="flex flex-wrap items-center gap-2 md:justify-end">
                         <StatusBadge status={match.status} />
-                        {match.status === "ongoing" && <ConnectionBadge connectionState={connectionState} />}
+                        {(match.status === "ongoing" || connectionState !== "live") && (
+                            <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.2em] ${connectionMeta.chipClass}`}>
+                                <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                                {connectionMeta.value}
+                            </span>
+                        )}
                     </div>
                 </div>
 
                 {/* Versus Display */}
-                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 sm:gap-8">
-                    {/* Left Side */}
-                    <div className="flex flex-col items-center gap-4 text-center">
-                        <div className="relative">
-                            <div className="flex -space-x-3 sm:-space-x-4">
-                                <PlayerAvatar name={getName(leftPrimaryId)} isWinner={leftIsWinner} size="lg" />
-                                {isDoubles && <PlayerAvatar name={getName(leftSecondaryId)} isWinner={leftIsWinner} size="lg" />}
+                <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(180px,220px)_minmax(0,1fr)] md:items-stretch">
+                    <MatchTeamPanel
+                        label="Team Alpha"
+                        sideCode="A01"
+                        players={alphaPlayers}
+                        isWinner={leftIsWinner}
+                    />
+
+                    <div className="flex flex-col justify-center rounded-[1.6rem] border border-white/10 bg-white/[0.04] px-4 py-5 sm:px-5 sm:py-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                        <span className="text-center text-[9px] font-black uppercase tracking-[0.28em] text-slate-500">
+                            {isCompleted ? "Final Set Count" : "Live Set Count"}
+                        </span>
+                        <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                            <div className="flex flex-col items-center">
+                                <span className={`text-5xl sm:text-7xl font-black tabular-nums tracking-tighter italic ${leftIsWinner ? "text-cyan-400 drop-shadow-[0_0_18px_rgba(6,182,212,0.35)]" : leftSetsWon > rightSetsWon ? "text-white" : "text-zinc-700"}`}>
+                                    {leftSetsWon}
+                                </span>
+                                <span className="mt-2 text-[9px] font-black uppercase tracking-[0.28em] text-slate-500">Alpha</span>
                             </div>
-                            {leftIsWinner && (
-                                <div className="absolute -top-3 -left-3 bg-yellow-500 text-black text-[10px] font-black px-2 py-0.5 rounded-full shadow-lg animate-bounce">
-                                    WINNER
+                            <div className="flex flex-col items-center gap-2">
+                                <div className="h-8 w-px bg-gradient-to-b from-transparent via-white/20 to-transparent sm:h-10" />
+                                <div className="rounded-xl border border-white/10 bg-[#050b14]/80 px-3 py-1.5">
+                                    <span className="text-[9px] font-black uppercase tracking-[0.28em] text-cyan-500/70">VS</span>
                                 </div>
-                            )}
+                                <div className="h-8 w-px bg-gradient-to-t from-transparent via-white/20 to-transparent sm:h-10" />
+                            </div>
+                            <div className="flex flex-col items-center">
+                                <span className={`text-5xl sm:text-7xl font-black tabular-nums tracking-tighter italic ${rightIsWinner ? "text-cyan-400 drop-shadow-[0_0_18px_rgba(6,182,212,0.35)]" : rightSetsWon > leftSetsWon ? "text-white" : "text-zinc-700"}`}>
+                                    {rightSetsWon}
+                                </span>
+                                <span className="mt-2 text-[9px] font-black uppercase tracking-[0.28em] text-slate-500">Bravo</span>
+                            </div>
                         </div>
-                        <div className="flex flex-col gap-1 min-w-0 w-full">
-                            <span className={`text-sm sm:text-base font-black truncate ${leftIsWinner ? "text-white" : "text-zinc-300"}`}>
-                                {isDoubles ? "Team 1" : getName(leftPrimaryId)}
-                            </span>
-                            {isDoubles && (
-                                <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider leading-tight">
-                                    {getName(leftPrimaryId)} & {getName(leftSecondaryId)}
+                        <div className="mt-4 rounded-[1.2rem] border border-white/10 bg-[#050b14]/75 px-4 py-3 text-center">
+                            <p className="text-[8px] font-black uppercase tracking-[0.28em] text-slate-500">
+                                {isCompleted ? "Final Game Score" : "Current Game Score"}
+                            </p>
+                            <div className="mt-2 flex items-end justify-center gap-3">
+                                <span className="text-2xl font-black italic tabular-nums text-white sm:text-3xl">{currentLeftScore}</span>
+                                <span className="pb-0.5 text-sm font-black italic text-slate-600">:</span>
+                                <span className="text-2xl font-black italic tabular-nums text-white sm:text-3xl">{currentRightScore}</span>
+                            </div>
+                            <p className="mt-2 text-[8px] font-black uppercase tracking-[0.24em] text-cyan-500/70">
+                                Set {currentSetNumber}
+                            </p>
+                        </div>
+                        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                            {!isCompleted && match.status === "ongoing" && (
+                                <span className="rounded-full border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em] text-emerald-300">
+                                    Telemetry Active
+                                </span>
+                            )}
+                            {isCompleted && (
+                                <span className={`rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em] ${isWinner ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300" : "border-white/10 bg-white/[0.04] text-slate-300"}`}>
+                                    {isWinner ? "Victory Logged" : "Match Archived"}
                                 </span>
                             )}
                         </div>
                     </div>
 
-                    {/* Center Score */}
-                    <div className="flex flex-col items-center gap-3">
-                        <div className="flex items-center gap-3 sm:gap-6">
-                            <span className={`text-5xl sm:text-7xl font-black tabular-nums tracking-tighter ${leftIsWinner ? "text-white" : leftSetsWon > rightSetsWon ? "text-zinc-200" : "text-zinc-500"}`}>
-                                {leftSetsWon}
-                            </span>
-                            <div className="flex flex-col items-center gap-1">
-                                <span className="text-2xl sm:text-3xl font-black text-zinc-800">:</span>
-                                <div className="px-2 py-0.5 bg-zinc-800 rounded-md">
-                                    <span className="text-[9px] font-black text-zinc-500 uppercase tracking-widest">VS</span>
-                                </div>
-                            </div>
-                            <span className={`text-5xl sm:text-7xl font-black tabular-nums tracking-tighter ${rightIsWinner ? "text-white" : rightSetsWon > leftSetsWon ? "text-zinc-200" : "text-zinc-500"}`}>
-                                {rightSetsWon}
-                            </span>
-                        </div>
-                    </div>
-
-                    {/* Right Side */}
-                    <div className="flex flex-col items-center gap-4 text-center">
-                        <div className="relative">
-                            <div className="flex -space-x-3 sm:-space-x-4">
-                                <PlayerAvatar name={getName(rightPrimaryId)} isWinner={rightIsWinner} size="lg" />
-                                {isDoubles && <PlayerAvatar name={getName(rightSecondaryId)} isWinner={rightIsWinner} size="lg" />}
-                            </div>
-                            {rightIsWinner && (
-                                <div className="absolute -top-3 -right-3 bg-yellow-500 text-black text-[10px] font-black px-2 py-0.5 rounded-full shadow-lg animate-bounce">
-                                    WINNER
-                                </div>
-                            )}
-                        </div>
-                        <div className="flex flex-col gap-1 min-w-0 w-full">
-                            <span className={`text-sm sm:text-base font-black truncate ${rightIsWinner ? "text-white" : "text-zinc-300"}`}>
-                                {isDoubles ? "Team 2" : getName(rightPrimaryId)}
-                            </span>
-                            {isDoubles && (
-                                <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider leading-tight">
-                                    {getName(rightPrimaryId)} & {getName(rightSecondaryId)}
-                                </span>
-                            )}
-                        </div>
-                    </div>
+                    <MatchTeamPanel
+                        label="Team Bravo"
+                        sideCode="B02"
+                        players={bravoPlayers}
+                        isWinner={rightIsWinner}
+                    />
                 </div>
 
-                {/* Footer Status */}
-                {!isCompleted && match.status === "ongoing" && (
-                    <div className="flex items-center justify-center gap-3 pt-4 border-t border-white/5">
-                        <div className="flex items-center gap-2 px-4 py-2 bg-emerald-500/5 border border-emerald-500/10 rounded-full">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                            <span className="text-[10px] font-black text-emerald-500 uppercase tracking-[0.2em]">
-                                Match Live
-                            </span>
-                        </div>
-                        {match.referee_id && (
-                            <div className="flex items-center gap-2 px-4 py-2 bg-zinc-800/50 border border-white/5 rounded-full">
-                                <span className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em]">
-                                    Refereed by {getName(match.referee_id)}
-                                </span>
-                            </div>
-                        )}
-                    </div>
-                )}
+                <div className="grid gap-3 border-t border-white/5 pt-5 sm:pt-6 sm:grid-cols-2 xl:grid-cols-4">
+                    <MatchInfoChip
+                        label="Mode"
+                        value={matchTitle}
+                        secondary={
+                            match.tournament_id
+                                ? "Bracket-linked official fixture"
+                                : match.match_type === "ranked"
+                                    ? "Competitive ladder fixture"
+                                    : match.match_type === "queue"
+                                        ? "Standard matchmaking fixture"
+                                        : "Custom scheduled fixture"
+                        }
+                        tone="info"
+                    />
+                    <MatchInfoChip
+                        label="Format"
+                        value={formatLabel}
+                        secondary={isDoubles ? "Two players per side" : "One player per side"}
+                        tone="neutral"
+                    />
+                    <MatchInfoChip
+                        label="Referee"
+                        value={match.referee_id ? "Assigned" : "Pending"}
+                        secondary={refereeLabel}
+                        tone={match.referee_id ? "info" : "warning"}
+                    />
+                    <MatchInfoChip
+                        label={liveDetailLabel}
+                        value={match.status === "ongoing" ? connectionMeta.value : humanize(match.status)}
+                        secondary={match.status === "ongoing" ? connectionMeta.secondary : isCompleted ? "Result posted to player records" : "Waiting for next match action"}
+                        tone={match.status === "ongoing" ? connectionMeta.tone : isCompleted ? "success" : "neutral"}
+                    />
+                </div>
 
                 {isCompleted && (
-                    <div className="pt-4">
-                        <div className={`rounded-2xl p-5 text-center border-2 ${
+                    <div className="pt-2">
+                        <div className={`relative overflow-hidden rounded-2xl p-6 text-center border transition-all duration-500 ${
                             isWinner 
-                                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
-                                : "bg-zinc-800/50 border-white/5 text-zinc-400"
+                                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.1)]" 
+                                : "bg-white/5 border-white/5 text-zinc-500"
                         }`}>
-                            <div className="flex items-center justify-center gap-3 mb-2">
-                                <span className="text-2xl">{isWinner ? "🏆" : "🏁"}</span>
-                                <h3 className="text-sm font-black uppercase tracking-widest">
-                                    {isWinner ? "Victory Achieved" : "Match Concluded"}
-                                </h3>
+                            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/[0.02] to-transparent -translate-x-full animate-shimmer" />
+                            <div className="relative z-10 flex flex-col items-center gap-4">
+                                <div className="flex items-center justify-center gap-4">
+                                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-2xl border ${isWinner ? 'bg-emerald-500/20 border-emerald-500/30' : 'bg-white/5 border-white/10'}`}>
+                                        {isWinner ? "🏆" : "🏁"}
+                                    </div>
+                                    <div className="text-left">
+                                        <h3 className="text-sm font-black uppercase italic tracking-[0.2em]">
+                                            {isWinner ? "Match Success" : "Match Logged"}
+                                        </h3>
+                                        <p className="text-[10px] font-bold opacity-60 uppercase tracking-widest mt-0.5">
+                                            {isWinner 
+                                                ? "Efficiency maximized. Rating updated." 
+                                                : "Match archived in facility records."}
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={onQuit}
+                                    className="w-full sm:w-auto px-10 py-3.5 bg-white text-black text-[10px] font-black uppercase tracking-[0.3em] italic rounded-xl transition-all hover:scale-105 active:scale-95 shadow-xl"
+                                >
+                                    Return to Base
+                                </button>
                             </div>
-                            <p className="text-xs font-bold opacity-60 max-w-xs mx-auto">
-                                {isWinner 
-                                    ? "Exceptional performance! Your rating has been updated." 
-                                    : "Match has ended. Check your profile for updated statistics."}
-                            </p>
-                            <button
-                                onClick={onQuit}
-                                className="mt-5 w-full sm:w-auto inline-flex items-center justify-center rounded-xl bg-white text-black px-8 py-3 text-xs font-black uppercase tracking-widest transition-transform hover:scale-[1.02] active:scale-[0.98]"
-                            >
-                                Return to Dashboard
-                            </button>
                         </div>
                     </div>
                 )}
@@ -1686,22 +1829,293 @@ function MatchScoreboard({
     );
 }
 
-function PlayerAvatar({ name, isWinner, size = "md" }: { name: string; isWinner: boolean; size?: "sm" | "md" | "lg" }) {
-    const initial = name[1]?.toUpperCase() || "?";
-    const sizeClasses = {
-        sm: "w-8 h-8 text-sm rounded-xl",
-        md: "w-12 h-12 text-lg rounded-2xl",
-        lg: "w-16 h-16 sm:w-20 sm:h-20 text-2xl sm:text-3xl rounded-[1.5rem] sm:rounded-[2rem]"
-    };
-
+function MatchTeamPanel({
+    label,
+    sideCode,
+    players,
+    isWinner,
+}: {
+    label: string;
+    sideCode: string;
+    players: { slot: string; name: string }[];
+    isWinner: boolean;
+}) {
     return (
-        <div className={`${sizeClasses[size]} border-2 ${isWinner ? "border-yellow-500 shadow-xl shadow-yellow-500/20" : "border-white/10"} bg-zinc-800 flex items-center justify-center relative overflow-hidden group transition-all duration-300`}>
-            <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent" />
-            <span className="font-black text-white relative z-10">{initial}</span>
-            <div className="absolute inset-0 bg-zinc-700 opacity-0 group-hover:opacity-10 transition-opacity" />
+        <div className={`relative overflow-hidden rounded-[1.6rem] border p-4 sm:p-5 min-w-0 ${
+            isWinner
+                ? "border-cyan-500/30 bg-cyan-500/[0.08] shadow-[0_0_24px_rgba(6,182,212,0.12)]"
+                : "border-white/10 bg-white/[0.03]"
+        }`}>
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <p className={`text-[9px] font-black uppercase tracking-[0.3em] ${isWinner ? "text-cyan-300" : "text-slate-500"}`}>{label}</p>
+                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400/80">
+                        {players.length} active {players.length === 1 ? "player" : "players"}
+                    </p>
+                </div>
+                <div className={`shrink-0 rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.2em] ${
+                    isWinner
+                        ? "border-cyan-500/30 bg-cyan-500/10 text-cyan-300"
+                        : "border-white/10 bg-[#050b14]/70 text-slate-400"
+                }`}>
+                    {isWinner ? "Winner" : sideCode}
+                </div>
+            </div>
+
+            <div className="mt-4 grid gap-2.5">
+                {players.map((player, index) => (
+                    <div
+                        key={`${player.slot}-${index}`}
+                        className={`flex items-center gap-3 rounded-[1.2rem] border px-3 py-3 min-w-0 ${
+                            isWinner ? "border-cyan-500/15 bg-[#07131d]/90" : "border-white/8 bg-[#050b14]/80"
+                        }`}
+                    >
+                        <PlayerAvatar name={player.name} isWinner={isWinner} size="sm" />
+                        <div className="min-w-0">
+                            <p className="text-[8px] font-black uppercase tracking-[0.24em] text-slate-500">{player.slot}</p>
+                            <p className={`mt-1 truncate text-sm font-black italic tracking-tight ${isWinner ? "text-cyan-50" : "text-white"}`}>
+                                {player.name}
+                            </p>
+                        </div>
+                    </div>
+                ))}
+            </div>
         </div>
     );
 }
+
+function MatchInfoChip({
+    label,
+    value,
+    secondary,
+    tone = "neutral",
+}: {
+    label: string;
+    value: string;
+    secondary?: string;
+    tone?: "neutral" | "info" | "success" | "warning" | "danger";
+}) {
+    const toneClasses = {
+        neutral: "border-white/8 bg-white/[0.03] text-white",
+        info: "border-cyan-500/15 bg-cyan-500/[0.06] text-cyan-50",
+        success: "border-emerald-500/15 bg-emerald-500/[0.06] text-emerald-50",
+        warning: "border-amber-500/15 bg-amber-500/[0.06] text-amber-50",
+        danger: "border-rose-500/15 bg-rose-500/[0.06] text-rose-50",
+    }[tone];
+    const dotClasses = {
+        neutral: "bg-slate-500",
+        info: "bg-cyan-400",
+        success: "bg-emerald-400",
+        warning: "bg-amber-400",
+        danger: "bg-rose-400",
+    }[tone];
+
+    return (
+        <div className={`rounded-[1.3rem] border px-4 py-3.5 min-w-0 ${toneClasses}`}>
+            <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
+                    <p className="text-[8px] font-black uppercase tracking-[0.28em] text-slate-500">{label}</p>
+                    <p className="mt-1 truncate text-sm font-black italic tracking-tight">{value}</p>
+                    {secondary && (
+                        <p className="mt-1 truncate text-[10px] font-medium uppercase tracking-[0.16em] text-slate-400/80">
+                            {secondary}
+                        </p>
+                    )}
+                </div>
+                <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${dotClasses}`} />
+            </div>
+        </div>
+    );
+}
+
+function MatchActionCenter({
+    viewerMode,
+    matchModeLabel,
+    isOngoing,
+    isCompleted,
+    isPending,
+    hasReferee,
+    canAcceptMatch,
+    hasAccepted,
+    canStart,
+    canOpenRefereeConsole,
+    canInviteReferee,
+    tournamentId,
+    currentSetNumber,
+    currentLeftScore,
+    currentRightScore,
+    actionLoading,
+    onAccept,
+    onStart,
+    onInviteReferee,
+    onOpenRefereeConsole,
+    onOpenTournament,
+    onBackToMatches,
+}: {
+    viewerMode: "player" | "referee" | "watcher";
+    matchModeLabel: string;
+    isOngoing: boolean;
+    isCompleted: boolean;
+    isPending: boolean;
+    hasReferee: boolean;
+    canAcceptMatch: boolean;
+    hasAccepted: boolean;
+    canStart: boolean;
+    canOpenRefereeConsole: boolean;
+    canInviteReferee: boolean;
+    tournamentId: string | null;
+    currentSetNumber: number;
+    currentLeftScore: number;
+    currentRightScore: number;
+    actionLoading: boolean;
+    onAccept: () => void;
+    onStart: () => void;
+    onInviteReferee: () => void;
+    onOpenRefereeConsole: () => void;
+    onOpenTournament: () => void;
+    onBackToMatches: () => void;
+}) {
+    const viewerLabel = viewerMode === "referee"
+        ? "Referee Access"
+        : viewerMode === "player"
+            ? "Player Access"
+            : "Watcher View";
+    const summary = viewerMode === "referee"
+        ? "You can monitor the live score and control official match operations."
+        : viewerMode === "player"
+            ? isPending
+                ? "Confirm readiness, wait for the lineup, and track the live score from here."
+                : "Track the live score, watch match progress, and access player actions quickly."
+            : "This screen is in spectator mode. You can follow the score but official controls stay locked.";
+    const liveScoreLabel = isCompleted
+        ? `Final score: ${currentLeftScore}-${currentRightScore} in set ${currentSetNumber}`
+        : `Live score: ${currentLeftScore}-${currentRightScore} in set ${currentSetNumber}`;
+
+    return (
+        <div className="relative overflow-hidden rounded-[1.8rem] border border-white/10 bg-[#0a111a]/80 p-5 shadow-2xl backdrop-blur-xl">
+            <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px)", backgroundSize: "18px 18px" }} />
+            <div className="relative z-10 flex flex-col gap-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">{viewerLabel}</p>
+                        <h3 className="mt-1 text-base font-black uppercase italic tracking-tight text-white sm:text-lg">{matchModeLabel} Action Center</h3>
+                        <p className="mt-2 max-w-2xl text-[11px] leading-relaxed text-slate-400">{summary}</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em] text-slate-300">
+                            {liveScoreLabel}
+                        </span>
+                        <span className={`rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-[0.2em] ${
+                            hasReferee ? "border-cyan-500/20 bg-cyan-500/10 text-cyan-300" : "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                        }`}>
+                            {hasReferee ? "Referee Assigned" : "Referee Needed"}
+                        </span>
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                    {canAcceptMatch && (
+                        <button
+                            onClick={onAccept}
+                            disabled={actionLoading}
+                            className="rounded-xl bg-white px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-black transition-all hover:bg-cyan-50 active:scale-[0.98] disabled:opacity-50"
+                        >
+                            {actionLoading ? "Processing..." : "Accept Match"}
+                        </button>
+                    )}
+                    {canStart && (
+                        <button
+                            onClick={onStart}
+                            disabled={actionLoading}
+                            className="rounded-xl bg-cyan-500 px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-black transition-all hover:bg-cyan-400 active:scale-[0.98] disabled:opacity-50"
+                        >
+                            {actionLoading ? "Starting..." : "Start Match"}
+                        </button>
+                    )}
+                    {canOpenRefereeConsole && (
+                        <button
+                            onClick={onOpenRefereeConsole}
+                            className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-cyan-200 transition-all hover:bg-cyan-500/15 active:scale-[0.98]"
+                        >
+                            Open Referee Console
+                        </button>
+                    )}
+                    {canInviteReferee && (
+                        <button
+                            onClick={onInviteReferee}
+                            className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-amber-200 transition-all hover:bg-amber-500/15 active:scale-[0.98]"
+                        >
+                            Invite Referee
+                        </button>
+                    )}
+                    {tournamentId && (
+                        <button
+                            onClick={onOpenTournament}
+                            className="rounded-xl border border-white/10 bg-white/[0.04] px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-white transition-all hover:bg-white/[0.08] active:scale-[0.98]"
+                        >
+                            View Tournament
+                        </button>
+                    )}
+                    <button
+                        onClick={onBackToMatches}
+                        className="rounded-xl border border-white/10 bg-[#050b14] px-5 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-300 transition-all hover:bg-white/[0.06] active:scale-[0.98]"
+                    >
+                        Back to Matches
+                    </button>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.03] px-4 py-3">
+                        <p className="text-[8px] font-black uppercase tracking-[0.24em] text-slate-500">Match State</p>
+                        <p className="mt-1 text-sm font-black italic text-white">
+                            {isCompleted ? "Completed" : isOngoing ? "Live" : isPending ? "Awaiting Players" : "In Progress"}
+                        </p>
+                    </div>
+                    <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.03] px-4 py-3">
+                        <p className="text-[8px] font-black uppercase tracking-[0.24em] text-slate-500">Viewer Mode</p>
+                        <p className="mt-1 text-sm font-black italic text-white">{viewerLabel}</p>
+                    </div>
+                    <div className="rounded-[1.2rem] border border-white/8 bg-white/[0.03] px-4 py-3">
+                        <p className="text-[8px] font-black uppercase tracking-[0.24em] text-slate-500">Readiness</p>
+                        <p className="mt-1 text-sm font-black italic text-white">
+                            {canStart ? "Ready To Start" : hasAccepted ? "Accepted / Watching" : hasReferee ? "Official Tracking Active" : "Awaiting Official"}
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function PlayerAvatar({ name, isWinner, size = "md" }: { name: string; isWinner: boolean; size?: "sm" | "md" | "lg" | "responsive" }) {
+    const words = name.split(/\s+/).filter(Boolean);
+    const initial = (
+        words.length >= 2
+            ? `${words[0][0] ?? ""}${words[1][0] ?? ""}`
+            : (words[0] ?? "?").slice(0, 2)
+    ).toUpperCase();
+    const sizeClasses = {
+        sm: "w-10 h-10 text-xs rounded-xl",
+        md: "w-14 h-14 text-lg rounded-2xl",
+        lg: "w-20 h-20 sm:w-24 sm:h-24 text-3xl sm:text-4xl rounded-[2rem] sm:rounded-[2.5rem]",
+        responsive: "w-14 h-14 sm:w-20 sm:h-20 text-xl sm:text-3xl rounded-2xl sm:rounded-[2rem]"
+    };
+
+    return (
+        <div className={`${sizeClasses[size]} relative border-2 ${isWinner ? "border-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.3)]" : "border-white/10"} bg-[#0a111a] flex items-center justify-center group transition-all duration-500 overflow-hidden`}>
+            {/* Inner Glow */}
+            <div className={`absolute inset-0 bg-gradient-to-br from-white/[0.05] to-transparent pointer-events-none`} />
+            
+            {/* Hex Pattern Overlay */}
+            <div className="absolute inset-0 opacity-[0.03] pointer-events-none" style={{ backgroundImage: "radial-gradient(circle, #fff 1px, transparent 1px)", backgroundSize: "10px 10px" }} />
+            
+            <span className={`font-black italic relative z-10 transition-transform duration-500 group-hover:scale-110 ${isWinner ? "text-cyan-400" : "text-white"}`}>{initial}</span>
+            
+            <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </div>
+    );
+}
+
 
 function AssemblingView({ 
     match, playerProfiles, onLeave, isActionLoading 
@@ -1737,10 +2151,10 @@ function AssemblingView({
                     const pid = [match.player1_id, match.player2_id, match.player3_id, match.player4_id][i];
                     const profile = pid ? playerProfiles[pid] : null;
                     return (
-                        <AssemblingSlot 
-                            key={i} 
-                            username={profile?.username} 
-                            isOccupied={!!pid} 
+                        <AssemblingSlot
+                            key={i}
+                            displayName={profile ? `${profile.first_name || ''} ${profile.last_name || ''}`.trim() : undefined}
+                            isOccupied={!!pid}
                             index={i}
                         />
                     );
@@ -1770,20 +2184,20 @@ function AssemblingView({
     );
 }
 
-function AssemblingSlot({ username, isOccupied, index }: { username?: string; isOccupied: boolean; index: number }) {
+function AssemblingSlot({ displayName, isOccupied, index }: { displayName?: string; isOccupied: boolean; index: number }) {
     return (
         <div className={`aspect-square rounded-[1.5rem] sm:rounded-[2rem] border-2 flex flex-col items-center justify-center gap-2 sm:gap-3 transition-all duration-500 ${
-            isOccupied 
-                ? "bg-zinc-800 border-white/10 shadow-xl shadow-black/20" 
+            isOccupied
+                ? "bg-zinc-800 border-white/10 shadow-xl shadow-black/20"
                 : "bg-zinc-900/30 border-white/5 border-dashed"
         }`}>
             {isOccupied ? (
                 <>
                     <div className="w-10 h-10 sm:w-12 sm:h-12 bg-white/10 rounded-2xl flex items-center justify-center text-lg sm:text-xl font-black text-white">
-                        {username ? username[0].toUpperCase() : "?"}
+                        {displayName ? displayName[0].toUpperCase() : "?"}
                     </div>
                     <span className="text-[11px] sm:text-xs font-black text-white tracking-tight truncate w-full text-center px-2">
-                        @{username || "..."}
+                        {displayName || "..."}
                     </span>
                 </>
             ) : (

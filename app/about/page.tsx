@@ -78,7 +78,7 @@ export default function AboutPage() {
           <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Platform Philosophy</span>
         </div>
         <h1 className="text-5xl md:text-7xl font-black tracking-tighter leading-none mb-8">
-          The Intelligent<br />
+          The Integrated<br />
           <span className="bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">Sports Ecosystem</span>.
         </h1>
         <p className="text-zinc-400 text-lg md:text-xl leading-relaxed max-w-3xl mx-auto">
@@ -206,7 +206,7 @@ export default function AboutPage() {
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between gap-8">
           <div className="flex flex-col items-center md:items-start gap-3">
             <Image src="/logo.png" alt="iSMS" width={100} height={30} className="h-7 w-auto grayscale opacity-50" />
-            <p className="text-[10px] text-zinc-600 font-medium tracking-widest uppercase">Intelligent Sports Management System</p>
+            <p className="text-[10px] text-zinc-600 font-medium tracking-widest uppercase">Integrated Sports Management System</p>
           </div>
           <div className="flex gap-10 text-[10px] font-black uppercase tracking-widest text-zinc-500">
             <Link href="/privacy" className="hover:text-zinc-300 transition-colors">Privacy</Link>

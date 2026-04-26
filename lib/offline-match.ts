@@ -71,6 +71,30 @@ export function clearPendingOfflineMatchNotice(storage: Storage) {
     } catch {}
 }
 
+/**
+ * Send the entire offline queue to the server in a single batch request.
+ * More reliable than individual calls when reconnecting after an outage.
+ * Returns the server's results array.
+ */
+export async function batchSyncOfflineQueue(
+    matchId: string,
+    queue: OfflineQueuedAction[],
+    token: string,
+): Promise<{ qid: string; status: string; reason?: string }[]> {
+    const res = await fetch(`/api/matches/${matchId}/offline-sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+            actions: queue.map(a => ({ qid: a.qid, type: a.type, payload: a.payload })),
+        }),
+    });
+    if (!res.ok) {
+        throw new Error(`Batch sync failed: ${res.status}`);
+    }
+    const data = await res.json();
+    return data.results ?? [];
+}
+
 export async function dispatchOfflineQueuedAction(matchId: string, action: OfflineQueuedAction, token: string) {
     if (action.type === "point") {
         return fetch(`/api/matches/${matchId}/point`, {

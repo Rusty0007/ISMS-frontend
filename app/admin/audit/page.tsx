@@ -6,7 +6,8 @@ import { getAccessToken } from "@/lib/auth";
 interface AuditLog {
     id: string;
     user_id: string;
-    username: string;
+    first_name: string | null;
+    last_name: string | null;
     event_type: string;
     ip_address: string | null;
     details: Record<string, unknown> | null;
@@ -94,7 +95,7 @@ export default function AuditAdminPage() {
                                 <td className="px-6 py-4">
                                     <div className="flex items-center gap-3">
                                         <div className="w-2 h-2 rounded-full bg-blue-500/50" />
-                                        <span className="text-white/80 font-medium">{l.username}</span>
+                                        <span className="text-white/80 font-medium">{`${l.first_name || ''} ${l.last_name || ''}`.trim() || l.user_id.slice(0, 8)}</span>
                                     </div>
                                 </td>
                                 <td className="px-6 py-4">

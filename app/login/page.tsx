@@ -11,8 +11,8 @@ const REASON_BANNERS: Record<string, { color: string; icon: string; title: strin
     kicked: {
         color: "border-red-500/30 bg-red-500/10",
         icon: "⚠️",
-        title: "Session terminated",
-        body: "Your session was ended because another login was detected on your account. Both sessions have been signed out for security. Please sign in again.",
+        title: "All sessions signed out",
+        body: "Another login was detected on your account, so every active session was signed out for security. Please sign in again.",
     },
     expired: {
         color: "border-yellow-500/30 bg-yellow-500/10",
@@ -64,9 +64,9 @@ function LoginContent() {
                 return;
             }
             setAccessToken(data.access_token);
-            sessionStorage.setItem("username", data.username);
+            sessionStorage.setItem("first_name", data.first_name || "");
+            sessionStorage.setItem("last_name", data.last_name || "");
             sessionStorage.setItem("roles", JSON.stringify(data.roles));
-            if (data.session_replaced) sessionStorage.setItem("session_replaced", "1");
             router.replace(data.profile_setup_complete ? "/dashboard" : "/profile/setup");
         } catch {
             setModal({ type: "error", title: "Connection Error", message: "Could not connect to the server. Please try again." });
@@ -120,7 +120,7 @@ function LoginContent() {
                     <div className="mt-12 relative">
                         <h2 className="text-2xl font-black tracking-tight text-white mb-2 uppercase">Welcome Back</h2>
                         <p className="text-zinc-500 text-sm font-medium leading-relaxed max-w-[200px] mx-auto uppercase tracking-widest text-[10px]">
-                            Intelligent Sports<br />Management System
+                            Integrated Sports<br />Management System
                         </p>
                     </div>
                 </div>

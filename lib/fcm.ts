@@ -39,13 +39,15 @@ function getFirebaseMessaging(): Messaging | null {
     }
 }
 
+const _FCM_TOKEN_CACHE_KEY = "isms_fcm_token";
+
 /**
  * Request notification permission, obtain an FCM token, and save it to the
  * ISMS backend so the server can send push notifications to this browser.
  *
- * Call this once after the user logs in (e.g. in NavBar's useEffect).
- * Safe to call multiple times — it only registers the service worker and
- * sends the token to the backend on the first call per session.
+ * Call on every app load (NavBar mount). FCM tokens are rotated by Firebase
+ * periodically — this function detects rotation by comparing the new token
+ * against the last registered one and only calls the backend when it changed.
  */
 export async function registerFcmToken(authToken: string): Promise<void> {
     if (typeof window === "undefined" || !("Notification" in window)) return;
@@ -69,17 +71,25 @@ export async function registerFcmToken(authToken: string): Promise<void> {
         const msging = getFirebaseMessaging();
         if (!msging) return;
 
-        const token = await getToken(msging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: swReg });
-        if (!token) return;
+        const newToken = await getToken(msging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: swReg });
+        if (!newToken) return;
 
-        await fetch("/api/auth/fcm-token", {
+        // Only call the backend when the token has changed — avoids redundant
+        // writes on every page navigation while still catching token rotations.
+        const lastToken = localStorage.getItem(_FCM_TOKEN_CACHE_KEY);
+        if (newToken === lastToken) return;
+
+        const res = await fetch("/api/auth/fcm-token", {
             method:  "POST",
             headers: {
                 "Content-Type": "application/json",
                 Authorization:  `Bearer ${authToken}`,
             },
-            body: JSON.stringify({ token }),
+            body: JSON.stringify({ token: newToken }),
         });
+        if (res.ok) {
+            localStorage.setItem(_FCM_TOKEN_CACHE_KEY, newToken);
+        }
     } catch (err) {
         // Non-fatal — app works without push notifications
         console.warn("[FCM] Registration failed:", err);

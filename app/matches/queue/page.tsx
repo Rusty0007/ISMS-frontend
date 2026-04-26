@@ -1,157 +1,120 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+/* eslint-disable @next/next/no-img-element */
+
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import Image from "next/image";
 import Link from "next/link";
-import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
+import { useRouter } from "next/navigation";
 import NavBar from "@/components/NavBar";
+import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
 
-// ── Icons ──────────────────────────────────────────────────────────────────
+// --- Types & Constants ---
 
-function IconUsers({ className = "w-4 h-4" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>;
-}
+type MatchFormat = "singles" | "doubles" | "mixed_doubles";
+type QueueMode = "normal" | "ranked";
+type QueueState = "idle" | "queued" | "assembling" | "optimizing" | "matched";
+type MatchedProfile = { id?: string; first_name?: string | null; last_name?: string | null; avatar_url?: string | null };
+type PlayerProfileResponse = Partial<MatchedProfile> & { profile?: MatchedProfile };
 
-function IconTarget({ className = "w-4 h-4" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
-}
-
-function IconZap({ className = "w-4 h-4" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>;
-}
-
-// ── Constants ──────────────────────────────────────────────────────────────
-
-const SPORTS_META: Record<string, { label: string; emoji: string; accent: string; border: string; bg: string; gradient: string }> = {
-    pickleball:   { label: "Pickleball",   emoji: "🏓", accent: "text-cyan-400",    border: "border-cyan-500/30",    bg: "bg-cyan-500/5",    gradient: "from-cyan-500/20 to-blue-600/20" },
-    badminton:    { label: "Badminton",    emoji: "🏸", accent: "text-purple-400",  border: "border-purple-500/30",  bg: "bg-purple-500/5",  gradient: "from-purple-500/20 to-pink-600/20" },
-    lawn_tennis:  { label: "Lawn Tennis",  emoji: "🎾", accent: "text-emerald-400", border: "border-emerald-500/30", bg: "bg-emerald-500/5", gradient: "from-emerald-500/20 to-teal-600/20" },
-    table_tennis: { label: "Table Tennis", emoji: "🏓", accent: "text-orange-400",  border: "border-orange-500/30",  bg: "bg-orange-500/5",  gradient: "from-orange-500/20 to-red-600/20" },
+const SPORTS_META: Record<string, { label: string; image: string; accent: string; border: string; tint: string; code: string; icon: string }> = {
+    pickleball: { label: "Pickleball", image: "/sports/pickleball.jpg.png", accent: "text-cyan-400", border: "border-cyan-500/30", tint: "bg-cyan-500/5", code: "PB", icon: "🎾" },
+    badminton: { label: "Badminton", image: "/sports/badminton.jpg.png", accent: "text-fuchsia-400", border: "border-fuchsia-500/30", tint: "bg-fuchsia-500/5", code: "BD", icon: "🏸" },
+    lawn_tennis: { label: "Lawn Tennis", image: "/sports/lawn-tennis.jpg.png", accent: "text-emerald-400", border: "border-emerald-500/30", tint: "bg-emerald-500/5", code: "LT", icon: "🎾" },
+    table_tennis: { label: "Table Tennis", image: "/sports/table-tennis.jpg.png", accent: "text-amber-400", border: "border-amber-500/30", tint: "bg-amber-500/5", code: "TT", icon: "🏓" },
 };
 
-// ── Components ─────────────────────────────────────────────────────────────
+const STEPS = [
+    { n: "01", t: "Sport Selection", d: "Select your sport discipline." },
+    { n: "02", t: "Match Setup", d: "Configure singles or doubles queue." },
+    { n: "03", t: "FIND MATCH", d: "Launch search and secure your match." },
+];
 
-function Background() {
+const MATCH_TYPES: { key: MatchFormat; badge: string; title: string; note: string; info: string }[] = [
+    {
+        key: "singles",
+        badge: "1v1",
+        title: "Singles",
+        note: "Direct 1v1 matchmaking.",
+        info: "The system will find one opponent from your joined clubs with a similar skill level and nearby availability."
+    },
+    {
+        key: "doubles",
+        badge: "2v2",
+        title: "Doubles",
+        note: "Team-based 2v2 matchmaking.",
+        info: "Queue solo to be paired with others, or invite a partner to search for another team of two."
+    },
+    {
+        key: "mixed_doubles",
+        badge: "MIX",
+        title: "Mixed Doubles",
+        note: "Male + female 2v2 matchmaking.",
+        info: "Mixed doubles is 2v2 where each team must have one male and one female player."
+    },
+];
+
+const SINGLES_STEPS = [
+    { title: "Checking Availability", note: "Checking availability across your joined clubs." },
+    { title: "Reviewing Stats", note: "Comparing skill levels for the best competitive fit." },
+    { title: "Proximity Sync", note: "Optimizing for nearby players and venue overlap." },
+];
+
+const DOUBLES_STEPS = [
+    { title: "Finding Players", note: "Waiting for eligible players to fill the 2v2 pool." },
+    { title: "Balancing Teams", note: "Calculating the fairest split based on combined ratings." },
+    { title: "Securing Venue", note: "Finalizing court availability for the group." },
+];
+
+// --- HUD Helper Components ---
+
+function HUDCorner({ className = "" }: { className?: string }) {
     return (
-        <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-            <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-violet-600/10 blur-[120px] animate-pulse" />
-            <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-cyan-600/10 blur-[120px] animate-pulse [animation-delay:2s]" />
-            <div className="absolute top-[20%] right-[15%] w-[20%] h-[20%] rounded-full bg-indigo-600/5 blur-[80px]" />
+        <svg className={`absolute w-4 h-4 text-white/20 ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M24 0H0V24" strokeLinecap="square" />
+        </svg>
+    );
+}
+
+function InfoIcon({ text }: { text: string }) {
+    const [show, setShow] = useState(false);
+    return (
+        <div className="relative inline-block ml-1.5" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+            <button type="button" className="flex h-4 w-4 items-center justify-center rounded-full border border-white/20 bg-white/5 text-[10px] text-slate-400 transition hover:border-cyan-400 hover:text-cyan-400">
+                ?
+            </button>
+            {show && (
+                <div className="absolute bottom-full left-1/2 z-[100] mb-2 w-48 -translate-x-1/2 rounded-lg border border-white/10 bg-[#0a111a] p-3 text-[10px] leading-relaxed text-slate-300 shadow-2xl animate-in fade-in slide-in-from-bottom-2">
+                    {text}
+                </div>
+            )}
         </div>
     );
 }
 
 function StatusBadge({ state }: { state: QueueState }) {
-    const config = {
-        idle:        { label: "Matchmaking",  color: "text-zinc-400 bg-zinc-800/50 border-zinc-700/50" },
-        queued:      { label: "Searching",    color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30 animate-pulse" },
-        assembling:  { label: "Assembling",   color: "text-purple-400 bg-purple-500/10 border-purple-500/30" },
-        optimizing:  { label: "Optimizing",   color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30 animate-pulse" },
-        matched:     { label: "Matched!",     color: "text-violet-400 bg-violet-500/10 border-violet-500/30" },
+    const meta = {
+        idle: "border-white/10 bg-white/5 text-slate-400",
+        queued: "border-cyan-500/30 bg-cyan-500/10 text-cyan-400",
+        assembling: "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-400",
+        optimizing: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+        matched: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+    }[state];
+    const label = {
+        idle: "READY",
+        queued: "SEARCHING",
+        assembling: "ASSEMBLING",
+        optimizing: "BALANCING",
+        matched: "MATCH SECURED"
     }[state];
 
     return (
-        <span className={`text-[10px] font-black tracking-widest uppercase px-3 py-1 rounded-full border shadow-sm ${config.color}`}>
-            {config.label}
-        </span>
+        <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-[10px] font-bold uppercase tracking-wider ${meta}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${state !== "idle" ? "bg-current animate-pulse" : "bg-white/20"}`} />
+            {label}
+        </div>
     );
 }
-
-function IconChevronRight({ className = "w-4 h-4" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>;
-}
-
-const FORMATS = [
-    { key: "singles",       label: "1v1 Singles",       desc: "Face one opponent head-to-head.",              icon: "👤" },
-    { key: "doubles",       label: "2v2 Doubles",       desc: "Solo queue — 4 players assemble into 2 teams.", icon: "👥" },
-    { key: "mixed_doubles", label: "2v2 Mixed Doubles", desc: "Mixed gender teams — 2 players per side.",      icon: "⚥" },
-];
-
-const FORMAT_LABELS: Record<string, string> = {
-    singles: "singles",
-    doubles: "doubles",
-    mixed_doubles: "mixed doubles",
-};
-
-function ratingKey(sportKey: string, formatKey: string) {
-    return `${sportKey}:${formatKey}`;
-}
-
-type QueueMode = "quick" | "ranked" | "club";
-
-const MATCH_MODE_META: Record<QueueMode, {
-    label: string;
-    shortLabel: string;
-    desc: string;
-    subtext: string;
-    accent: string;
-    border: string;
-    bg: string;
-    waitHint: string;
-}> = {
-    quick: {
-        label: "Quick Match",
-        shortLabel: "Quick",
-        desc: "Fastest queue for casual singles.",
-        subtext: "Best default when you just want an opponent soon.",
-        accent: "text-cyan-400",
-        border: "border-cyan-500/30",
-        bg: "bg-cyan-500/5",
-        waitHint: "Fastest search",
-    },
-    ranked: {
-        label: "Ranked Ladder",
-        shortLabel: "Ranked",
-        desc: "Stricter singles pairing for rated players.",
-        subtext: "Higher quality pairings, but usually a longer wait.",
-        accent: "text-emerald-400",
-        border: "border-emerald-500/30",
-        bg: "bg-emerald-500/5",
-        waitHint: "Fairness over speed",
-    },
-    club: {
-        label: "Club Session",
-        shortLabel: "Club",
-        desc: "Find a singles opponent inside one chosen club.",
-        subtext: "Best for club nights, ladders, and venue play.",
-        accent: "text-amber-400",
-        border: "border-amber-500/30",
-        bg: "bg-amber-500/5",
-        waitHint: "Club-only pairing",
-    },
-};
-
-const SINGLES_AI_STEPS = [
-    { icon: "⚙️", msg: "Initializing AI matchmaker..." },
-    { icon: "🔍", msg: "Scanning player pool..." },
-    { icon: "📊", msg: "Analyzing Glicko-2 ratings..." },
-    { icon: "🎯", msg: "Scoring candidate pairings..." },
-    { icon: "🗺️", msg: "Checking geographic proximity..." },
-    { icon: "📈", msg: "Evaluating win-rate trends..." },
-    { icon: "⚡", msg: "Filtering by skill category..." },
-    { icon: "🏆", msg: "Assessing match history..." },
-    { icon: "🧮", msg: "Computing match quality score..." },
-    { icon: "✨", msg: "Optimizing for best match..." },
-];
-
-const DOUBLES_WAIT_STEPS = [
-    { icon: "🔍", msg: "Scanning for available players..." },
-    { icon: "📊", msg: "Building player pool..." },
-    { icon: "⏳", msg: "Waiting for more teammates..." },
-    { icon: "🤝", msg: "Grouping compatible players..." },
-];
-
-const DOUBLES_OPTIMIZE_STEPS = [
-    { icon: "⚙️", msg: "All 4 players found!" },
-    { icon: "🧮", msg: "Testing all 3 team splits..." },
-    { icon: "📊", msg: "Scoring each combination..." },
-    { icon: "⚖️", msg: "Selecting most balanced teams..." },
-    { icon: "✅", msg: "Optimal teams confirmed!" },
-];
-
-type QueueState = "idle" | "queued" | "assembling" | "optimizing" | "matched";
-
-// ── Helpers ───────────────────────────────────────────────────────────────
 
 function useElapsedTime(running: boolean) {
     const [seconds, setSeconds] = useState(0);
@@ -159,418 +122,444 @@ function useElapsedTime(running: boolean) {
     useEffect(() => {
         if (running) {
             setSeconds(0);
-            ref.current = setInterval(() => setSeconds(s => s + 1), 1000);
-        } else {
-            if (ref.current) clearInterval(ref.current);
-        }
+            ref.current = setInterval(() => setSeconds((v) => v + 1), 1000);
+        } else if (ref.current) clearInterval(ref.current);
         return () => { if (ref.current) clearInterval(ref.current); };
     }, [running]);
-    const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
-    const ss = String(seconds % 60).padStart(2, "0");
-    return `${mm}:${ss}`;
+    return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function useCyclingStep(steps: { icon: string; msg: string }[], running: boolean, interval = 2200) {
+function useCyclingStep(items: { title: string; note: string }[], running: boolean, delay = 2200) {
     const [idx, setIdx] = useState(0);
     const ref = useRef<ReturnType<typeof setInterval> | null>(null);
     useEffect(() => {
         if (running) {
             setIdx(0);
-            ref.current = setInterval(() => setIdx(i => (i + 1) % steps.length), interval);
-        } else {
-            if (ref.current) clearInterval(ref.current);
-        }
+            ref.current = setInterval(() => setIdx((v) => (v + 1) % items.length), delay);
+        } else if (ref.current) clearInterval(ref.current);
         return () => { if (ref.current) clearInterval(ref.current); };
-    }, [running, steps.length, interval]);
-    return steps[idx];
+    }, [delay, items.length, running]);
+    return items[idx];
 }
 
-// ── Main Component ─────────────────────────────────────────────────────────
+async function resolveCityName(cityCode: string) {
+    // Avoid blocking the queue page on external PSGC DNS/API availability.
+    return cityCode ? `PSGC ${cityCode}` : "";
+}
+
+function isTeamFormat(value: MatchFormat) {
+    return value !== "singles";
+}
+
+function formatTitle(value: MatchFormat) {
+    if (value === "singles") return "SINGLES (1v1)";
+    if (value === "mixed_doubles") return "MIXED DOUBLES (2v2)";
+    return "DOUBLES (2v2)";
+}
+
+function hasMixedDoublesGender(value: string | null) {
+    return value === "male" || value === "female";
+}
+
+function queueModeLabel(value: QueueMode) {
+    return value === "ranked" ? "Ranked Match" : "Normal Calibration";
+}
+
+function queueModeNote(value: QueueMode) {
+    return value === "ranked"
+        ? "ML-gated match for calibrated players."
+        : "Counts toward the 10-match ML calibration.";
+}
+
+// --- Main Queue Page ---
 
 export default function QueuePage() {
     const router = useRouter();
+    const [userSports, setUserSports] = useState<string[]>([]);
+    const [sport, setSport] = useState("");
+    const [format, setFormat] = useState<MatchFormat>("singles");
+    const [queueMode, setQueueMode] = useState<QueueMode>("normal");
+    const [formatTouched, setFormatTouched] = useState(false);
+    const [queueState, setQueueState] = useState<QueueState>("idle");
+    const [, setPlayersJoined] = useState(0);
+    const [loading, setLoading] = useState(false);
+    const [fetchingMe, setFetchingMe] = useState(true);
+    const [error, setError] = useState("");
+    const [requestedSport, setRequestedSport] = useState<string | null>(null);
+    const [requestedFormat, setRequestedFormat] = useState<MatchFormat | null>(null);
 
-    const [userSports,      setUserSports]      = useState<string[]>([]);
-    const [userRatings,     setUserRatings]     = useState<Record<string, { rating_status: string; matches_played: number }>>({});
-    const [sport,           setSport]           = useState("");
-    const [format,          setFormat]          = useState("singles");
-    const [queueMode,       setQueueMode]       = useState<QueueMode>("quick");
-    const [queueState,      setQueueState]      = useState<QueueState>("idle");
-    const [playersJoined,   setPlayersJoined]   = useState(0);
-    const [loading,         setLoading]         = useState(false);
-    const [fetchingMe,      setFetchingMe]      = useState(true);
-    const [error,           setError]           = useState("");
-    const [myClubs,         setMyClubs]         = useState<{ id: string; name: string; sport: string | null; role: string }[]>([]);
-    const [preferredClubId, setPreferredClubId] = useState<string>("");
-    const [preferredIndoor, setPreferredIndoor] = useState<boolean | null>(null);
+    const [hasInitializedFromUrl, setHasInitializedFromUrl] = useState(false);
+
+    const [displayName, setDisplayName] = useState("");
+    const [heroLocation, setHeroLocation] = useState("Set your location");
+    const [profileGender, setProfileGender] = useState<string | null>(null);
+
+    // Transition / Preparing States
+    const [matchedProfiles, setMatchedProfiles] = useState<MatchedProfile[]>([]);
 
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const redirectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const navigatingMatchIdRef = useRef<string | null>(null);
 
-    const isSearching  = queueState === "queued";
-    const isAssembling = queueState === "assembling";
-    const isOptimizing = queueState === "optimizing";
+    const elapsed = useElapsedTime(queueState === "queued" || queueState === "assembling" || queueState === "optimizing");
+    const singlesStep = useCyclingStep(SINGLES_STEPS, queueState === "queued");
+    const doublesStep = useCyclingStep(DOUBLES_STEPS, queueState === "assembling" || queueState === "optimizing", 1800);
 
-    const elapsed = useElapsedTime(isSearching || isAssembling);
-    const aiStep  = useCyclingStep(SINGLES_AI_STEPS, isSearching, 2200);
-    const dblStep = useCyclingStep(
-        isOptimizing ? DOUBLES_OPTIMIZE_STEPS : DOUBLES_WAIT_STEPS,
-        isAssembling || isOptimizing,
-        1800
-    );
-
-    // Cleanup polling on unmount
-    useEffect(() => {
-        return () => {
-            if (pollRef.current) clearInterval(pollRef.current);
-            if (redirectRef.current) clearTimeout(redirectRef.current);
-        };
+    useEffect(() => () => {
+        if (pollRef.current) clearInterval(pollRef.current);
+        if (redirectRef.current) clearTimeout(redirectRef.current);
     }, []);
 
     useEffect(() => {
-        if (!preferredClubId) return;
-        const stillEligible = myClubs.some((club) => club.id === preferredClubId && (!sport || !club.sport || club.sport === sport));
-        if (!stillEligible) setPreferredClubId("");
-    }, [myClubs, preferredClubId, sport]);
-
-    useEffect(() => {
-        if (format !== "singles" && queueMode === "club") {
-            setQueueMode("quick");
+        if (typeof window === "undefined") return;
+        const params = new URLSearchParams(window.location.search);
+        const nextSport = params.get("sport");
+        const formatParam = params.get("format");
+        const modeParam = params.get("mode");
+        const nextFormat = formatParam === "doubles" || formatParam === "mixed_doubles" || formatParam === "singles" ? formatParam : null;
+        setRequestedSport(nextSport);
+        setRequestedFormat(nextFormat);
+        if (nextFormat) {
+            setFormat(nextFormat);
+            setFormatTouched(true);
         }
-    }, [format, queueMode]);
+        if (modeParam === "ranked" || modeParam === "normal") {
+            setQueueMode(modeParam);
+        }
+    }, []);
 
-    // Block navigation while in queue
     useEffect(() => {
-        if (queueState !== "queued" && queueState !== "assembling") return;
-        const handleBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); };
-        const handlePopState = () => {
-            if (window.confirm("You are currently in queue. Leave queue?")) {
-                void handleLeaveQueue();
-                router.replace("/matches");
-                return;
-            }
-            window.history.pushState(null, "", window.location.href);
-        };
-        window.history.pushState(null, "", window.location.href);
-        window.addEventListener("beforeunload", handleBeforeUnload);
-        window.addEventListener("popstate", handlePopState);
-        return () => {
-            window.removeEventListener("beforeunload", handleBeforeUnload);
-            window.removeEventListener("popstate", handlePopState);
-        };
-    }, [queueState, sport, format]); // eslint-disable-line react-hooks/exhaustive-deps
+        if (queueState !== "idle" || userSports.length === 0 || hasInitializedFromUrl) return;
 
-    // Load user profile
+        const initialSport = requestedSport && userSports.includes(requestedSport) ? requestedSport : null;
+
+        if (initialSport) {
+            setSport(initialSport);
+        } else if (!sport && userSports.length === 1) {
+            setSport(userSports[0]);
+        }
+
+        if (requestedFormat) {
+            setFormat(requestedFormat);
+            setFormatTouched(true);
+        }
+
+        setHasInitializedFromUrl(true);
+    }, [hasInitializedFromUrl, queueState, requestedFormat, requestedSport, sport, userSports]);
+
     useEffect(() => {
         const token = getAccessToken();
         if (!token) { router.replace("/login"); return; }
-        fetch("/api/players/me", { headers: { Authorization: `Bearer ${token}` } })
-            .then(r => {
-                if (isUnauthorized(r.status)) { clearAuthSession(); router.replace("/login"); return null; }
-                if (!r.ok) throw new Error();
-                return r.json();
-            })
-            .then(data => {
-                if (!data) return;
-                const sports: string[] = (data.sports ?? []).map((s: { sport: string }) => s.sport);
+        let cancelled = false;
+
+        const loadProfile = async () => {
+            try {
+                const res = await fetch("/api/players/me", { headers: { Authorization: `Bearer ${token}` } });
+                if (isUnauthorized(res.status)) { clearAuthSession(); router.replace("/login"); return; }
+                if (!res.ok) throw new Error();
+                const data = await res.json();
+                if (cancelled) return;
+                const sports = (Array.isArray(data.sports) ? data.sports : [])
+                    .map((entry: { sport?: string }) => entry?.sport)
+                    .filter((value: string | undefined): value is string => typeof value === "string" && value.length > 0);
                 setUserSports(sports);
-                
-                const ratings: { sport: string; match_format: string; rating_status: string; matches_played: number }[] = data.ratings ?? [];
-                const ratingsByFormat = Object.fromEntries(
-                    ratings.map((entry) => [
-                        ratingKey(entry.sport, entry.match_format),
-                        { rating_status: entry.rating_status, matches_played: entry.matches_played },
-                    ])
-                );
-                setUserRatings(ratingsByFormat);
-
-                if (sports.length === 1) setSport(sports[0]);
-            })
-            .catch(() => setError("Could not load your profile. Please retry."))
-            .finally(() => setFetchingMe(false));
-
-        // Load joined clubs (admin + member)
-        fetch("/api/clubs/mine", { headers: { Authorization: `Bearer ${token}` } })
-            .then(r => r.ok ? r.json() : null)
-            .then(data => {
-                if (!data) return;
-                const admin  = (data.admin  ?? []).map((c: { id: string; name: string; sport: string | null }) => ({ ...c, role: "Admin" }));
-                const member = (data.member ?? []).map((c: { id: string; name: string; sport: string | null }) => ({ ...c, role: "Member" }));
-                setMyClubs([...admin, ...member]);
-            })
-            .catch(() => {/* non-critical */});
-
-        fetch("/api/matches/queue/me", { headers: { Authorization: `Bearer ${token}` } })
-            .then(r => r.ok ? r.json() : null)
-            .then(async data => {
-                if (data?.active_match && data.match_id) {
-                    const target = await resolveMatchTarget(data.match_id, data.match_status);
-                    router.replace(target);
-                    return;
+                setDisplayName(`${data.profile?.first_name || ''} ${data.profile?.last_name || ''}`.trim() || "");
+                setProfileGender(typeof data.profile?.gender === "string" ? data.profile.gender : null);
+                if (data.profile?.city_mun_code) {
+                    const city = await resolveCityName(data.profile.city_mun_code);
+                    if (!cancelled && city) setHeroLocation(city);
                 }
+            } catch {
+                if (!cancelled) setError("System link failure. Please retry.");
+            } finally {
+                if (!cancelled) setFetchingMe(false);
+            }
+        };
+
+        const restoreQueue = async () => {
+            try {
+                const res = await fetch("/api/matches/queue/me", { headers: { Authorization: `Bearer ${token}` } });
+                if (!res.ok) return;
+                const data = await res.json();
+                if (cancelled) return;
+                if (data?.active_match && data.match_id) { router.replace(await resolveMatchTarget(data.match_id, data.match_status)); return; }
                 if (!data?.in_queue) return;
-
                 const restoredSport = data.sport ?? "";
-                const restoredFormat = data.match_format ?? "singles";
-                const restoredMode: QueueMode = data.match_mode === "ranked"
-                    ? "ranked"
-                    : data.match_mode === "club" && restoredFormat === "singles"
-                        ? "club"
-                        : "quick";
+                const restoredFormat: MatchFormat =
+                    data.match_format === "doubles" || data.match_format === "mixed_doubles"
+                        ? data.match_format
+                        : "singles";
                 const joined = Number(data.players_joined ?? (restoredFormat === "singles" ? 1 : 0));
-
                 setSport(restoredSport);
                 setFormat(restoredFormat);
-                setQueueMode(restoredMode);
+                setQueueMode(data.match_mode === "ranked" ? "ranked" : "normal");
+                setFormatTouched(true);
                 setPlayersJoined(joined);
+                setQueueState(restoredFormat === "singles" ? "queued" : joined >= 4 ? "optimizing" : "assembling");
+                startPolling(restoredSport, restoredFormat, data.match_mode === "ranked" ? "ranked" : "normal", token);
+            } catch {}
+        };
 
-                if (restoredFormat === "singles") {
-                    setQueueState("queued");
-                } else {
-                    setQueueState(joined >= 4 ? "optimizing" : "assembling");
-                }
-
-                startPolling(restoredSport, restoredFormat, restoredMode, token);
-            })
-            .catch(() => {/* non-critical */});
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-    function getToken() {
-        const t = getAccessToken();
-        if (!t) router.replace("/login");
-        return t;
-    }
+        void loadProfile();
+        void restoreQueue();
+        return () => { cancelled = true; };
+    }, [router]); // eslint-disable-line react-hooks/exhaustive-deps
 
     async function resolveMatchTarget(matchId: string, statusHint?: string) {
         if (statusHint === "awaiting_players") return `/matches/${matchId}/lobby`;
         if (statusHint === "ongoing" || statusHint === "pending_approval") return `/matches/${matchId}`;
-
         const token = getAccessToken();
         if (!token) return `/matches/${matchId}`;
-
         try {
-            const res = await fetch(`/api/matches/${matchId}`, {
-                headers: { Authorization: `Bearer ${token}` },
-            });
+            const res = await fetch(`/api/matches/${matchId}`, { headers: { Authorization: `Bearer ${token}` } });
+            if (res.status === 404) return "/matches/queue";
             if (!res.ok) return `/matches/${matchId}`;
             const data = await res.json();
-            const liveStatus = data?.match?.status ?? data?.status;
-            return liveStatus === "awaiting_players" ? `/matches/${matchId}/lobby` : `/matches/${matchId}`;
+            const status = data?.match?.status ?? data?.status;
+            if (status === "awaiting_players") return `/matches/${matchId}/lobby`;
+            if (status === "invalidated" || status === "cancelled") return "/matches/queue";
+            return `/matches/${matchId}`;
         } catch {
             return `/matches/${matchId}`;
         }
     }
 
-    // ── Queue Actions ──────────────────────────────────────────────────────
+    function startPolling(sportKey: string, formatKey: MatchFormat, modeKey: QueueMode, token: string) {
+        if (pollRef.current) clearInterval(pollRef.current);
+        pollRef.current = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/matches/queue/status?sport=${sportKey}&match_format=${formatKey}&match_mode=${modeKey}`, { headers: { Authorization: `Bearer ${token}` } });
+                if (isUnauthorized(res.status)) { if (pollRef.current) clearInterval(pollRef.current); clearAuthSession(); router.replace("/login"); return; }
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.status === "matched") { if (pollRef.current) clearInterval(pollRef.current); void handleMatchFound(data.match_id, data.match_status); }
+                else if (data.status === "assembling" && data.players_joined !== undefined) {
+                    const joined = Number(data.players_joined ?? 0);
+                    setPlayersJoined(joined);
+                    setQueueState(joined >= 4 ? "optimizing" : "assembling");
+                }
+            } catch {}
+        }, 3000);
+    }
+
+    async function handleMatchFound(id: string, statusHint?: string) {
+        if (!id || navigatingMatchIdRef.current === id) return;
+        navigatingMatchIdRef.current = id;
+        if (redirectRef.current) clearTimeout(redirectRef.current);
+        if (pollRef.current) clearInterval(pollRef.current);
+        
+        setQueueState("matched");
+
+        const token = getAccessToken();
+        if (token) {
+            try {
+                const res = await fetch(`/api/matches/${id}`, { headers: { Authorization: `Bearer ${token}` } });
+                if (res.ok) {
+                    const data = await res.json();
+                    const pIds = [data.match.player1_id, data.match.player2_id, data.match.player3_id, data.match.player4_id].filter(Boolean);
+                    
+                    const profilePromises = pIds.map(pid =>
+                        fetch(`/api/players/${pid}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json() as Promise<PlayerProfileResponse>)
+                    );
+                    const profiles = await Promise.all(profilePromises);
+                    setMatchedProfiles(profiles.map((item) => item.profile ?? item));
+                }
+            } catch (e) {
+                console.error("Failed to fetch match details for transition", e);
+            }
+        }
+
+        const target = await resolveMatchTarget(id, statusHint);
+        // Extended delay for the transition effect
+        redirectRef.current = setTimeout(() => router.push(target), 4500);
+    }
 
     async function handleJoinQueue() {
-        if (!sport) { setError("Please select a sport."); return; }
-        const activeMode: QueueMode = format !== "singles" && queueMode === "club" ? "quick" : queueMode;
-        const selectedRating = userRatings[ratingKey(sport, format)] ?? null;
-        const formatLabel = FORMAT_LABELS[format] ?? format.replace("_", " ");
-        if (activeMode === "ranked" && selectedRating?.rating_status !== "RATED") {
-            setError(`Ranked queue unlocks after 10 calibrated ${formatLabel} matches for this sport.`);
-            return;
-        }
-        if (format === "singles" && activeMode === "club" && !preferredClubId) {
-            setError("Choose one of your clubs before starting a club session queue.");
+        if (!sport) { setError("Discipline not selected."); return; }
+        if (format === "mixed_doubles" && !hasMixedDoublesGender(profileGender)) {
+            setError("Mixed doubles requires your profile gender to be male or female.");
             return;
         }
         setError("");
         setLoading(true);
-        const token = getToken();
-        if (!token) return;
+        const token = getAccessToken();
+        if (!token) { router.replace("/login"); return; }
         try {
             const res = await fetch("/api/matches/queue/join", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                body: JSON.stringify({
-                    sport,
-                    match_format: format,
-                    match_mode: activeMode,
-                    ...(preferredClubId ? { preferred_club_id: preferredClubId } : {}),
-                    ...(preferredIndoor !== null ? { preferred_indoor: preferredIndoor } : {}),
-                }),
+                body: JSON.stringify({ sport, match_format: format, match_mode: queueMode }),
             });
             if (isUnauthorized(res.status)) { clearAuthSession(); router.replace("/login"); return; }
             const data = await res.json();
-            if (!res.ok) { setError(data.detail || "Failed to join queue."); return; }
-
-            if (data.status === "matched") {
-                await handleMatchFound(data.match_id, data.match_status);
-                return;
-            }
+            if (!res.ok) { setError(data.detail || "Search failed."); return; }
+            if (data.status === "matched") { await handleMatchFound(data.match_id, data.match_status); return; }
             if (data.status === "assembling") {
                 setPlayersJoined(data.players_joined ?? 1);
                 setQueueState("assembling");
-                startPolling(sport, format, activeMode, token);
+                startPolling(sport, format, queueMode, token);
                 return;
             }
             setQueueState("queued");
-            startPolling(sport, format, activeMode, token);
+            startPolling(sport, format, queueMode, token);
         } catch {
-            setError("Could not connect to the server.");
+            setError("Connection failure.");
         } finally {
             setLoading(false);
         }
     }
 
-    function startPolling(sportKey: string, formatKey: string, modeKey: QueueMode, token: string) {
-        if (pollRef.current) clearInterval(pollRef.current);
-        pollRef.current = setInterval(async () => {
-            try {
-                const res = await fetch(
-                    `/api/matches/queue/status?sport=${sportKey}&match_format=${formatKey}&match_mode=${modeKey}`,
-                    { headers: { Authorization: `Bearer ${token}` } }
-                );
-                if (isUnauthorized(res.status)) {
-                    if (pollRef.current) clearInterval(pollRef.current);
-                    clearAuthSession(); router.replace("/login"); return;
-                }
-                if (!res.ok) return;
-                const data = await res.json();
-
-                if (data.status === "matched") {
-                    if (pollRef.current) clearInterval(pollRef.current);
-                    void handleMatchFound(data.match_id, data.match_status);
-                } else if (data.status === "assembling" && data.players_joined !== undefined) {
-                    const joined = data.players_joined as number;
-                    setPlayersJoined(joined);
-                    if (joined >= 4) setQueueState("optimizing");
-                    else setQueueState("assembling");
-                }
-            } catch { /* silent — keep polling */ }
-        }, 3000);
-    }
-
-    async function handleMatchFound(id: string, statusHint?: string) {
-        if (!id) return;
-        if (navigatingMatchIdRef.current === id) return;
-        navigatingMatchIdRef.current = id;
-        if (redirectRef.current) clearTimeout(redirectRef.current);
-        if (pollRef.current) clearInterval(pollRef.current);
-        setQueueState("matched");
-        const target = await resolveMatchTarget(id, statusHint);
-        // Delay for 3.5s to show the "Match Found!" animation
-        redirectRef.current = setTimeout(() => {
-            router.push(target);
-        }, 3500);
-    }
-
     async function handleLeaveQueue() {
-        const token = getToken();
+        const token = getAccessToken();
         if (!token) return;
-        const activeMode: QueueMode = format !== "singles" && queueMode === "club" ? "quick" : queueMode;
         if (pollRef.current) clearInterval(pollRef.current);
         if (redirectRef.current) clearTimeout(redirectRef.current);
         navigatingMatchIdRef.current = null;
         try {
-            await fetch(
-                `/api/matches/queue/leave?sport=${sport}&match_format=${format}&match_mode=${activeMode}`,
-                { method: "DELETE", headers: { Authorization: `Bearer ${token}` } }
-            );
-        } catch { /* best effort */ }
+            await fetch(`/api/matches/queue/leave?sport=${sport}&match_format=${format}&match_mode=${queueMode}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+        } catch {}
         setQueueState("idle");
         setPlayersJoined(0);
     }
 
-    // ── Derived ────────────────────────────────────────────────────────────
-
-    const selectedMeta = SPORTS_META[sport];
-    const selectedRating = sport ? userRatings[ratingKey(sport, format)] ?? null : null;
-    const activeMode: QueueMode = format !== "singles" && queueMode === "club" ? "quick" : queueMode;
-    const formatLabel = FORMAT_LABELS[format] ?? format.replace("_", " ");
-    const availableModes: QueueMode[] = format === "singles" ? ["quick", "ranked", "club"] : ["quick", "ranked"];
-    const selectedModeMeta = MATCH_MODE_META[activeMode];
-    const eligibleClubs = myClubs.filter((club) => !sport || !club.sport || club.sport === sport);
-    const rankedUnlocked = selectedRating?.rating_status === "RATED";
-    const clubModeBlocked = format === "singles" && activeMode === "club" && !preferredClubId;
-    const primaryActionLabel = loading
-        ? "Synchronizing..."
-        : activeMode === "ranked"
-            ? format === "singles"
-                ? "Join Ranked Queue"
-                : "Join Ranked Team Queue"
-            : format !== "singles"
-                ? "Enter Team Assembly"
-                : activeMode === "club"
-                    ? "Search Club Session"
-                    : "Initiate Matchmaking";
+    const selectedMeta = sport ? SPORTS_META[sport] : undefined;
+    const activeStep = !sport ? 1 : !formatTouched ? 2 : 3;
 
     if (fetchingMe) {
         return (
-            <div className="min-h-screen bg-zinc-950 text-white flex items-center justify-center">
-                <div className="text-zinc-500 text-sm animate-pulse">Loading your profile...</div>
+            <div className="min-h-screen bg-[#050b14] text-white">
+                <div className="flex min-h-screen items-center justify-center px-4">
+                    <div className="rounded-2xl border border-white/5 bg-white/[0.02] px-8 py-6 text-xs font-black uppercase tracking-widest text-slate-500 animate-pulse">
+                        Synchronizing Player Data...
+                    </div>
+                </div>
             </div>
         );
     }
 
-    // ── Render ─────────────────────────────────────────────────────────────
-
     return (
-        <div className="relative min-h-screen bg-zinc-950 text-white overflow-x-hidden">
-            <Background />
-            <NavBar backHref="/matches" backLabel="← Arena" />
+        <div className="min-h-screen bg-[#050b14] text-white selection:bg-cyan-500/30 font-sans">
+            {/* Background Effects */}
+            <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(16,36,60,0.4)_0%,transparent_50%)]" />
+                <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)", backgroundSize: "40px 40px" }} />
+                <div className="absolute inset-0 animate-scanline pointer-events-none opacity-[0.02] bg-[linear-gradient(transparent,rgba(255,255,255,0.5),transparent)] h-20" />
+            </div>
 
-            <main className="relative z-10 pt-24 pb-12 px-4">
-                <div className="max-w-lg mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+            <NavBar hideLogo backHref="/dashboard" backLabel="Dashboard" />
 
-                    {/* ── IDLE — Selection ── */}
-                    {queueState === "idle" && (
-                        <div className="space-y-8">
-                            
-                            {/* Discovery Header */}
-                            <div className="text-center space-y-2">
-                                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/20 mb-2">
-                                    <span className="relative flex h-2 w-2">
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
-                                    </span>
-                                    <span className="text-[10px] font-black tracking-widest text-cyan-400 uppercase">AI Matchmaking Active</span>
-                                </div>
-                                <h1 className="text-4xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white to-zinc-500">
-                                    Arena Entry
-                                </h1>
-                                <p className="text-zinc-500 text-sm max-w-[280px] mx-auto font-medium">
-                                    Our neural engine scans for your optimal opponent based on Glicko-2 metrics.
-                                </p>
+            <main className="relative z-10 mx-auto flex max-w-[1400px] flex-col gap-6 sm:gap-8 px-4 py-6 sm:py-8 pb-32 sm:px-6 lg:px-8 pt-20 sm:pt-24">
+
+                {/* Sticky Mobile Action Bar */}
+                {queueState === "idle" && sport && (
+                    <div className="lg:hidden fixed bottom-24 inset-x-0 z-[90] px-4 animate-in slide-in-from-bottom-10 duration-500">
+                        <button
+                            type="button"
+                            onClick={() => void handleJoinQueue()}
+                            disabled={loading}
+                            className="group relative w-full overflow-hidden rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 py-4 text-xs font-black uppercase tracking-[0.2em] text-white shadow-[0_12px_40px_rgba(6,182,212,0.4)] active:scale-95 transition-all"
+                        >
+                            <span className="relative z-10 flex items-center justify-center gap-2">
+                                {loading ? (
+                                    <span className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                                ) : (
+                                    <>
+                                        <span className="text-sm">⚡</span>
+                                        {queueMode === "ranked" ? "FIND RANKED MATCH" : "FIND NORMAL MATCH"}
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                    </>
+                                )}
+                            </span>
+                            <div className="absolute inset-0 bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.2),transparent)] animate-[shimmer_2s_infinite]" />
+                        </button>
+                    </div>
+                )}
+
+                {queueState === "idle" && (
+                    <div className="space-y-6 sm:space-y-8">
+                        {/* Hero Command Center */}
+                        <section className="relative group overflow-hidden rounded-[1.5rem] sm:rounded-[2rem] border border-white/5 bg-[#0a111a]/80 backdrop-blur-xl shadow-2xl">
+                            <HUDCorner className="top-3 left-3 sm:top-4 sm:left-4" />
+                            <HUDCorner className="top-3 right-3 sm:top-4 sm:right-4 rotate-90" />
+                            <HUDCorner className="bottom-3 left-3 sm:bottom-4 sm:left-4 -rotate-90" />
+                            <HUDCorner className="bottom-3 right-3 sm:bottom-4 sm:right-4 rotate-180" />
+
+                            <div className="absolute inset-0 opacity-20 transition-opacity group-hover:opacity-30">
+                                <Image src="/sports/sports-hero.png" alt="ISMS background" fill className="object-cover" />
+                                <div className="absolute inset-0 bg-gradient-to-r from-[#050b14] via-[#050b14]/90 to-transparent" />
                             </div>
 
-                            <div className="bg-zinc-900/40 backdrop-blur-xl border border-zinc-800/50 rounded-[2.5rem] p-8 space-y-8 shadow-2xl relative overflow-hidden group">
-                                <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-600/5 blur-3xl -mr-16 -mt-16 group-hover:bg-cyan-600/10 transition-colors" />
-
-                                {/* Sport selection */}
-                                <section className="space-y-4">
-                                    <header className="flex items-center gap-4">
-                                        <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Select Discipline</h2>
-                                        <div className="h-px bg-zinc-800/50 flex-1" />
-                                    </header>
-                                    {userSports.length === 0 ? (
-                                        <div className="bg-zinc-950/20 rounded-2xl p-6 text-center border border-dashed border-zinc-800/50">
-                                            <p className="text-sm text-zinc-500 mb-4">No sports defined in your combat profile.</p>
-                                            <Link href="/profile/setup" className="bg-white text-zinc-950 text-[10px] font-black px-6 py-2.5 rounded-xl hover:scale-105 transition-all uppercase tracking-widest inline-block">Complete Setup</Link>
+                            <div className="relative flex flex-col lg:flex-row items-center justify-between gap-8 sm:gap-12 p-6 sm:p-8 lg:p-12">
+                                <div className="max-w-xl space-y-4 sm:space-y-6 text-center lg:text-left">
+                                    <div className="space-y-3 sm:space-y-4">
+                                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full border border-cyan-500/20 bg-cyan-500/10 text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                                            SEARCH READY
                                         </div>
+                                        <h1 className="mt-1 text-3xl sm:text-4xl font-black tracking-tight text-white lg:text-5xl uppercase italic leading-tight">
+                                            FIND <span className="text-transparent bg-clip-text bg-gradient-to-r from-white via-cyan-100 to-cyan-500">MATCH</span>
+                                        </h1>
+                                        <p className="text-sm sm:text-lg text-slate-400 leading-relaxed font-light">
+                                            Launch normal calibration matches to build history, or switch to ranked once the ML model can judge your skill profile.
+                                        </p>
+                                    </div>
+                                    <div className="flex flex-wrap justify-center lg:justify-start gap-2 sm:gap-3">
+                                        <span className="rounded-full border border-white/5 bg-white/5 px-3 sm:px-4 py-1 sm:py-1.5 text-[9px] sm:text-xs font-bold text-slate-300">OP: {displayName}</span>
+                                        <span className="rounded-full border border-white/5 bg-white/5 px-3 sm:px-4 py-1 sm:py-1.5 text-[9px] sm:text-xs font-bold text-slate-300">LOC: {heroLocation}</span>
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-3 sm:gap-4 w-full lg:w-auto min-w-0 sm:min-w-[320px]">
+                                    {[{ label: "Queue Type", value: queueMode === "ranked" ? "Ranked" : "Normal", note: queueModeNote(queueMode) },
+                                      { label: "Search Mode", value: queueMode === "ranked" ? "ML" : "Calibration", note: queueMode === "ranked" ? "Guardrailed" : "History builder" }].map((stat) => (
+                                        <div key={stat.label} className="relative overflow-hidden rounded-xl sm:rounded-2xl border border-white/5 bg-black/40 p-4 sm:p-5">
+                                            <div className="absolute top-0 left-0 h-1 w-full bg-cyan-500 opacity-20" />
+                                            <p className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest text-slate-500">{stat.label}</p>
+                                            <p className="mt-1 sm:mt-2 text-2xl sm:text-3xl font-black italic text-white">{stat.value}</p>
+                                            <p className="mt-0.5 sm:mt-1 text-[8px] sm:text-[10px] font-bold uppercase text-slate-600">{stat.note}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </section>
+
+                        <div className="grid gap-6 sm:gap-8 lg:grid-cols-[1fr_360px]">
+                            {/* Primary Interaction Column */}
+                            <div className="space-y-8 sm:space-y-12">
+                                {/* Sport Discipline Selection */}
+                                <section className="space-y-4 sm:space-y-6">
+                                    <div className="flex items-end justify-between px-2 gap-2">
+                                        <div className="space-y-1">
+                                            <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.4em] text-cyan-500">Step 01</p>
+                                            <h2 className="text-xl sm:text-2xl font-black uppercase italic tracking-tight">Select Discipline <InfoIcon text="Choose the sport you want to compete in. Only sports registered on your account are displayed." /></h2>
+                                        </div>
+                                        <StatusBadge state="idle" />
+                                    </div>
+
+                                    {userSports.length === 0 ? (
+                                        <Empty title="No Registered Disciplines" note="Configure your profile to track performance across different sports before queuing." href="/profile" action="Configure Profile" />
                                     ) : (
-                                        <div className="grid grid-cols-2 gap-3">
-                                            {userSports.map(key => {
-                                                const meta = SPORTS_META[key];
-                                                const isActive = sport === key;
+                                        <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-2">
+                                            {userSports.map((key) => {
+                                                const meta = SPORTS_META[key] || { label: key, image: "/sports/community-photo.png", accent: "text-white", border: "border-white/10", tint: "bg-white/5", code: "??", icon: "🏸" };
+                                                const active = sport === key;
                                                 return (
-                                                    <button
-                                                        key={key}
-                                                        onClick={() => setSport(key)}
-                                                        className={`relative group overflow-hidden border-2 rounded-2xl p-4 text-left transition-all duration-300 ${
-                                                            isActive ? `${meta.border} ${meta.bg} shadow-lg shadow-black/20` : "border-zinc-800/50 bg-zinc-950/20 text-zinc-500 hover:border-zinc-700"
-                                                        }`}
-                                                    >
-                                                        {isActive && (
-                                                            <div className={`absolute inset-0 bg-gradient-to-br ${meta.gradient} opacity-10`} />
-                                                        )}
-                                                        <span className={`text-2xl mb-3 block transition-transform duration-500 ${isActive ? "scale-110" : "grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100"}`}>
-                                                            {meta.emoji}
-                                                        </span>
-                                                        <p className={`text-sm font-black ${isActive ? "text-white" : "group-hover:text-zinc-300"}`}>{meta.label}</p>
+                                                    <button key={key} type="button" onClick={() => { setSport(key); setError(""); }} className={`group relative overflow-hidden rounded-[1.5rem] sm:rounded-[2rem] border transition-all ${active ? `${meta.border} bg-[#0a111a] ring-2 ring-cyan-500/20` : "border-white/5 bg-white/[0.02] hover:bg-white/[0.04]"}`}>
+                                                        <div className={`absolute inset-0 opacity-[0.05] grayscale transition-all ${active ? "opacity-[0.1] grayscale-0" : "group-hover:opacity-[0.08]"}`}>
+                                                            <Image src={meta.image} alt={meta.label} fill className="object-cover" />
+                                                        </div>
+                                                        <div className="relative flex min-h-[120px] sm:min-h-[160px] flex-col justify-between p-5 sm:p-6 text-left">
+                                                            <div className="flex items-start justify-between">
+                                                                <div className={`flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg sm:rounded-xl bg-white/5 border border-white/10 ${active ? meta.accent : "text-white/40"}`}>
+                                                                    <span className="text-sm sm:text-lg font-black italic">{meta.code}</span>
+                                                                </div>
+                                                                {active && <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Selected</span>}
+                                                            </div>
+                                                            <div>
+                                                                <h3 className={`text-lg sm:text-xl font-black uppercase italic tracking-tight ${active ? meta.accent : "text-white"}`}>{meta.label}</h3>
+                                                                <p className="mt-0.5 sm:mt-1 text-[8px] sm:text-[10px] font-bold uppercase tracking-widest text-slate-500">{active ? "SEARCH READY" : "Standby"}</p>
+                                                            </div>
+                                                        </div>
                                                     </button>
                                                 );
                                             })}
@@ -578,490 +567,435 @@ export default function QueuePage() {
                                     )}
                                 </section>
 
-                                {/* Format selection */}
-                                <section className="space-y-4">
-                                    <header className="flex items-center gap-4">
-                                        <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Combat Format</h2>
-                                        <div className="h-px bg-zinc-800/50 flex-1" />
-                                    </header>
-                                    <div className="grid grid-cols-1 gap-3">
-                                        {FORMATS.map(f => {
-                                            const isActive = format === f.key;
+                                {/* Match Type Selection */}
+                                <section className="space-y-4 sm:space-y-6">
+                                    <div className="flex items-end justify-between px-2">
+                                        <div className="space-y-1">
+                                            <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.4em] text-cyan-500">Step 02</p>
+                                            <h2 className="text-xl sm:text-2xl font-black uppercase italic tracking-tight">Tactical Setup <InfoIcon text="Configure your match format. Singles for 1v1, doubles for open 2v2, or mixed doubles for male + female teams." /></h2>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-3">
+                                        {MATCH_TYPES.map((type) => {
+                                            const active = format === type.key;
                                             return (
                                                 <button
-                                                    key={f.key}
-                                                    onClick={() => setFormat(f.key)}
-                                                    className={`group flex items-center gap-4 border-2 rounded-2xl p-4 text-left transition-all duration-300 ${
-                                                        isActive ? "border-cyan-500/30 bg-cyan-500/5 shadow-lg shadow-cyan-500/5" : "border-zinc-800/50 bg-zinc-950/20 text-zinc-500 hover:border-zinc-700"
-                                                    }`}
+                                                    key={type.key}
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setFormat(type.key);
+                                                        setFormatTouched(true);
+                                                        setError("");
+                                                    }}
+                                                    className={`group relative overflow-hidden rounded-[1.5rem] sm:rounded-[2rem] border transition-all ${active ? "border-cyan-500/30 bg-[#0a111a] ring-2 ring-cyan-500/20" : "border-white/5 bg-white/[0.02] hover:bg-white/[0.04]"}`}
                                                 >
-                                                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl transition-all ${isActive ? "bg-cyan-500/20 text-white" : "bg-zinc-900 text-zinc-600 group-hover:bg-zinc-800"}`}>
-                                                        {f.icon}
+                                                    <div className="relative p-5 sm:p-6 text-left space-y-3 sm:space-y-4">
+                                                        <div className="flex items-start justify-between">
+                                                            <div className={`flex h-10 w-10 sm:h-12 sm:w-12 items-center justify-center rounded-lg sm:rounded-xl bg-white/5 border border-white/10 text-lg sm:text-xl font-black italic ${active ? "text-cyan-400" : "text-white/40"}`}>
+                                                                {type.badge}
+                                                            </div>
+                                                            <InfoIcon text={type.info} />
+                                                        </div>
+                                                        <div>
+                                                            <h3 className="text-lg sm:text-xl font-black uppercase italic tracking-tight text-white">{type.title}</h3>
+                                                            <p className="mt-1 sm:mt-2 text-xs sm:text-sm text-slate-400 font-light leading-relaxed">{type.note}</p>
+                                                        </div>
                                                     </div>
-                                                    <div className="flex-1">
-                                                        <p className={`text-sm font-black ${isActive ? "text-white" : "text-zinc-400 group-hover:text-zinc-200"}`}>{f.label}</p>
-                                                        <p className={`text-[10px] font-bold uppercase tracking-wider ${isActive ? "text-cyan-400/60" : "text-zinc-600"}`}>{f.desc}</p>
-                                                    </div>
-                                                    {isActive && <div className="w-2 h-2 rounded-full bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.8)]" />}
                                                 </button>
                                             );
                                         })}
                                     </div>
                                 </section>
+                            </div>
 
-                                <section className="space-y-4">
-                                    <header className="flex items-center gap-4">
-                                        <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Match Lane</h2>
-                                        <div className="h-px bg-zinc-800/50 flex-1" />
-                                    </header>
-                                    <div className="grid grid-cols-1 gap-3">
-                                        {availableModes.map((mode) => {
-                                                const meta = MATCH_MODE_META[mode];
-                                                const isActive = queueMode === mode;
-                                                const isDisabled = mode === "ranked"
-                                                    ? !rankedUnlocked
-                                                    : mode === "club"
-                                                        ? eligibleClubs.length === 0
-                                                        : false;
-                                                return (
-                                                    <button
-                                                        key={mode}
-                                                        type="button"
-                                                        onClick={() => setQueueMode(mode)}
-                                                        className={`group flex items-start gap-4 border-2 rounded-2xl p-4 text-left transition-all duration-300 ${
-                                                            isActive
-                                                                ? `${meta.border} ${meta.bg} shadow-lg shadow-black/20`
-                                                                : "border-zinc-800/50 bg-zinc-950/20 text-zinc-500 hover:border-zinc-700"
-                                                        } ${isDisabled ? "opacity-60" : ""}`}
-                                                    >
-                                                        <div className={`mt-0.5 w-11 h-11 rounded-xl flex items-center justify-center border transition-all ${
-                                                            isActive ? `${meta.bg} ${meta.border} ${meta.accent}` : "bg-zinc-900 border-zinc-800 text-zinc-600"
-                                                        }`}>
-                                                            {mode === "quick" ? <IconZap className="w-5 h-5" /> : mode === "ranked" ? <IconTarget className="w-5 h-5" /> : <IconUsers className="w-5 h-5" />}
-                                                        </div>
-                                                        <div className="flex-1 space-y-1">
-                                                            <div className="flex items-center justify-between gap-3">
-                                                                <p className={`text-sm font-black ${isActive ? "text-white" : "text-zinc-300 group-hover:text-zinc-100"}`}>{meta.label}</p>
-                                                                <span className={`text-[9px] font-black uppercase tracking-[0.2em] ${isActive ? meta.accent : "text-zinc-600"}`}>
-                                                                    {meta.waitHint}
-                                                                </span>
-                                                            </div>
-                                                            <p className={`text-[10px] font-bold uppercase tracking-wider ${isActive ? `${meta.accent}/70` : "text-zinc-600"}`}>{meta.desc}</p>
-                                                            <p className="text-xs text-zinc-500 leading-relaxed">{meta.subtext}</p>
-                                                            {mode === "ranked" && (
-                                                                <p className={`text-[11px] font-semibold ${rankedUnlocked ? "text-emerald-400" : "text-amber-400"}`}>
-                                                                    {rankedUnlocked
-                                                                        ? `Rated for ${sport ? (SPORTS_META[sport]?.label ?? "this sport") : "this sport"} ${formatLabel}`
-                                                                        : `Unlock after 10 calibrated ${formatLabel} matches. Current: ${selectedRating?.matches_played ?? 0}`}
-                                                                </p>
-                                                            )}
-                                                            {mode === "club" && (
-                                                                <p className={`text-[11px] font-semibold ${eligibleClubs.length > 0 ? "text-amber-400" : "text-zinc-500"}`}>
-                                                                    {eligibleClubs.length > 0
-                                                                        ? "Choose a club below to keep pairing inside that venue."
-                                                                        : "Join a club first before using club-only matchmaking."}
-                                                                </p>
-                                                            )}
-                                                        </div>
-                                                    </button>
-                                                );
-                                            })}
+                            <aside className="space-y-6 lg:sticky lg:top-24 h-fit">
+                                {/* Deployment Summary (Random Ranked Match Button) */}
+                                <section className="relative overflow-hidden rounded-[1.5rem] sm:rounded-[2rem] border border-cyan-500/20 bg-[#0a111a]/90 backdrop-blur-xl p-6 sm:p-8 shadow-2xl ring-1 ring-white/10">
+                                    <div className="absolute top-0 left-0 w-1 h-12 bg-cyan-500 rounded-full translate-y-6" />
+                                    <div className="mb-6 sm:mb-8 space-y-1">
+                                        <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] text-cyan-500/60">Finalize</p>
+                                        <h2 className="text-xl sm:text-2xl font-black uppercase italic tracking-tight text-white">Match Summary</h2>
+                                    </div>
+
+                                    <div className="space-y-3 sm:space-y-4">
+                                        <div className="rounded-xl sm:rounded-2xl bg-white/5 p-4 sm:p-5 border border-white/5 transition-colors hover:bg-white/[0.08]">
+                                            <p className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest text-slate-500">Selected Sport</p>
+                                            <p className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-black italic text-white uppercase leading-none">{selectedMeta?.label || "NOT SELECTED"}</p>
+                                        </div>
+                                        <div className="rounded-xl sm:rounded-2xl bg-white/5 p-4 sm:p-5 border border-white/5 transition-colors hover:bg-white/[0.08]">
+                                            <p className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest text-slate-500">Match Mode</p>
+                                            <p className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-black italic text-white uppercase leading-none">{formatTitle(format)}</p>
+                                        </div>
+                                        <div className="rounded-xl sm:rounded-2xl bg-white/5 p-4 sm:p-5 border border-white/5 transition-colors hover:bg-white/[0.08]">
+                                            <p className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest text-slate-500">Queue Protocol</p>
+                                            <p className="mt-0.5 sm:mt-1 text-lg sm:text-xl font-black italic text-white leading-none">{queueModeLabel(queueMode).toUpperCase()}</p>
+                                        </div>
+                                    </div>
+
+                                    <div className="mt-4 sm:mt-5 grid grid-cols-2 gap-2 rounded-2xl border border-white/5 bg-black/20 p-2">
+                                        {(["normal", "ranked"] as QueueMode[]).map((mode) => {
+                                            const active = queueMode === mode;
+                                            return (
+                                                <button
+                                                    key={mode}
+                                                    type="button"
+                                                    onClick={() => { setQueueMode(mode); setError(""); }}
+                                                    className={`rounded-xl px-3 py-3 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.18em] transition ${active ? "bg-cyan-500 text-black shadow-[0_0_24px_rgba(6,182,212,0.25)]" : "text-slate-400 hover:bg-white/5 hover:text-white"}`}
+                                                >
+                                                    {mode === "ranked" ? "Ranked" : "Normal"}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+
+                                    {error && (
+                                        <div className="mt-4 sm:mt-6 rounded-xl border border-rose-500/20 bg-rose-500/5 p-3 sm:p-4 text-[9px] sm:text-[10px] font-bold uppercase tracking-widest text-rose-400 animate-in fade-in slide-in-from-top-2">
+                                            ⚠ {error}
+                                        </div>
+                                    )}
+
+                                    <div className="mt-6 sm:mt-8 space-y-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => void handleJoinQueue()}
+                                            disabled={loading || !sport}
+                                            className="group relative w-full overflow-hidden rounded-2xl bg-gradient-to-br from-cyan-500 via-blue-600 to-indigo-700 py-4 sm:py-5 text-[11px] sm:text-xs font-black uppercase tracking-[0.2em] text-white transition-all hover:scale-[1.02] hover:shadow-[0_0_30px_rgba(6,182,212,0.4)] active:scale-[0.98] disabled:opacity-40 disabled:grayscale disabled:scale-100"
+                                        >
+                                            <span className="relative z-10 flex items-center justify-center gap-3">
+                                                {loading ? (
+                                                    <span className="flex items-center gap-2">
+                                                        <span className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                                                        Initializing...
+                                                    </span>
+                                                ) : (
+                                                    <>
+                                                        <span className="text-base">⚡</span>
+                                                        {queueMode === "ranked" ? "FIND RANKED MATCH" : "FIND NORMAL MATCH"}
+                                                        <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                                                    </>
+                                                )}
+                                            </span>
+                                            <div className="absolute inset-0 bg-[linear-gradient(110deg,transparent,rgba(255,255,255,0.15),transparent)] -translate-x-full group-hover:animate-[shimmer_1.5s_infinite] duration-1000" />
+                                        </button>
+
+                                        {isTeamFormat(format) && (
+                                            <button
+                                                type="button"
+                                                onClick={() => router.push(`/matches/party?sport=${sport}&format=${format}&mode=${queueMode}`)}
+                                                disabled={!sport}
+                                                className="w-full rounded-2xl border border-white/10 bg-white/5 py-3.5 sm:py-4 text-[10px] sm:text-xs font-black uppercase tracking-[0.2em] text-white transition hover:bg-white/10 hover:border-white/20 disabled:opacity-40"
+                                            >
+                                                {format === "mixed_doubles" ? "Invite Mixed Partner" : "Invite Partner"}
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    <p className="mt-5 sm:mt-6 text-[9px] sm:text-[10px] font-medium text-slate-500 leading-relaxed text-center">
+                                        {queueMode === "ranked"
+                                            ? "Ranked random matchmaking requires ML calibration: 10 completed matches in this sport and format."
+                                            : "Normal matches are for calibration testing and count toward the 10-match ML unlock."}
+                                    </p>
+                                </section>
+                            </aside>
+
+                            {/* Secondary Information Row */}
+                            <div className="space-y-8 sm:space-y-12">
+                                {/* System Logic Overlay (Informational) */}
+                                <section className="space-y-6">
+                                    <div className="rounded-[1.5rem] sm:rounded-[2rem] border border-cyan-500/20 bg-[#0a1420] p-6 sm:p-8">
+                                        <div className="flex items-center gap-3 sm:gap-4 mb-5 sm:mb-6">
+                                            <div className="flex h-8 w-8 sm:h-10 sm:w-10 items-center justify-center rounded-lg sm:rounded-xl bg-cyan-500/10 text-cyan-400">
+                                                <svg className="w-4 h-4 sm:w-5 sm:h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M12 11v5m0-8h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                            </div>
+                                            <h3 className="text-lg sm:text-xl font-black uppercase italic tracking-tight text-white">Matchmaking Protocols</h3>
+                                        </div>
+                                        <div className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-3">
+                                            {[
+                                                { t: "Skill Parity", d: "Matches users with equivalent ratings for competitive balance.", i: "📊" },
+                                                { t: "Proximity Sync", d: "Prioritizes nearby players to minimize travel time.", i: "📍" },
+                                                { t: "Network Search", d: "Utilizes joined clubs for trusted venue access.", i: "🏢" }
+                                            ].map((p) => (
+                                                <div key={p.t} className="rounded-xl sm:rounded-2xl bg-white/5 p-4 sm:p-5 border border-white/5">
+                                                    <span className="text-lg block mb-1.5 sm:mb-2">{p.i}</span>
+                                                    <h4 className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-white mb-1.5 sm:mb-2">{p.t}</h4>
+                                                    <p className="text-[9px] sm:text-[10px] font-medium leading-relaxed text-slate-500">{p.d}</p>
+                                                </div>
+                                            ))}
+                                        </div>
                                     </div>
                                 </section>
-
-                                {format !== "singles" && (
-                                    <section className="space-y-4">
-                                        <header className="flex items-center gap-4">
-                                            <h2 className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Recommended Flow</h2>
-                                            <div className="h-px bg-zinc-800/50 flex-1" />
-                                        </header>
-                                        <div className="rounded-[2rem] border border-violet-500/20 bg-violet-500/5 p-5 space-y-4 shadow-lg shadow-violet-500/5">
-                                            <div className="flex items-start gap-4">
-                                                <div className="w-11 h-11 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-300 flex items-center justify-center">
-                                                    <IconUsers className="w-5 h-5" />
-                                                </div>
-                                                <div className="space-y-1">
-                                                    <p className="text-sm font-black text-white">Best doubles experience: Duo Queue</p>
-                                                    <p className="text-xs text-zinc-400 leading-relaxed">
-                                                        If you already know your partner, start from Duo Queue. Solo doubles still works here, but it needs four compatible players online at the same time.
-                                                    </p>
-                                                </div>
-                                            </div>
-                                            <div className="flex flex-col sm:flex-row gap-3">
-                                                <Link
-                                                    href="/matches/party"
-                                                    className="flex-1 rounded-2xl bg-white text-zinc-950 font-black text-[11px] uppercase tracking-[0.2em] px-5 py-3 text-center transition-transform hover:scale-[1.01]"
-                                                >
-                                                    Open Duo Queue
-                                                </Link>
-                                                <span className="flex-1 rounded-2xl border border-zinc-800 bg-zinc-950/30 px-5 py-3 text-[11px] font-bold text-zinc-500 uppercase tracking-[0.15em] text-center">
-                                                    Solo assembly stays available below
-                                                </span>
-                                            </div>
-                                            <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-4 py-3">
-                                                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-emerald-300">Calibration counts here</p>
-                                                <p className="mt-1 text-xs font-semibold leading-relaxed text-emerald-100/75">
-                                                    Completed quick matches and Duo Queue matches in {selectedMeta?.label ?? "this sport"} {formatLabel} both count toward the 10-match ranked unlock.
-                                                </p>
-                                            </div>
-                                        </div>
-                                    </section>
-                                )}
-
-                                {/* Preferences */}
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    <div className="space-y-3">
-                                        <label className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Location</label>
-                                        <select 
-                                            value={preferredClubId}
-                                            onChange={(e) => setPreferredClubId(e.target.value)}
-                                            className="w-full bg-zinc-950/40 border-2 border-zinc-800/50 rounded-2xl px-4 py-3 text-sm font-bold text-zinc-300 focus:outline-none focus:border-cyan-500/40 appearance-none cursor-pointer transition-colors"
-                                        >
-                                            <option value="">{activeMode === "club" ? "Select Club Session Hub" : "Any Hub (Global)"}</option>
-                                            {eligibleClubs.map(club => (
-                                                <option key={club.id} value={club.id}>{club.name} ({club.role})</option>
-                                            ))}
-                                        </select>
-                                    </div>
-
-                                    <div className="space-y-3">
-                                        <label className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">Atmosphere</label>
-                                        <div className="flex bg-zinc-950/40 border-2 border-zinc-800/50 rounded-2xl p-1">
-                                            {[
-                                                { value: null,  label: "Any" },
-                                                { value: true,  label: "Indoor" },
-                                                { value: false, label: "Outdoor" },
-                                            ].map(opt => (
-                                                <button
-                                                    key={String(opt.value)}
-                                                    onClick={() => setPreferredIndoor(opt.value)}
-                                                    className={`flex-1 py-2 text-[10px] font-black uppercase tracking-wider rounded-xl transition-all ${
-                                                        preferredIndoor === opt.value ? "bg-zinc-800 text-white shadow-xl" : "text-zinc-600 hover:text-zinc-400"
-                                                    }`}
-                                                >
-                                                    {opt.label}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {activeMode === "ranked" && !rankedUnlocked && (
-                                    <div className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 flex items-start gap-3 animate-in zoom-in-95 duration-300">
-                                        <div className="mt-0.5 w-8 h-8 rounded-xl border border-amber-500/20 bg-amber-500/10 text-amber-300 flex items-center justify-center shrink-0">
-                                            <IconTarget className="w-4 h-4" />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-amber-300">Ranked still locked</p>
-                                            <p className="text-xs font-semibold leading-relaxed text-amber-100/75">
-                                                Finish 10 calibrated {formatLabel} matches for {selectedMeta?.label ?? "this sport"} before you enter ladder matchmaking.
-                                            </p>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {clubModeBlocked && (
-                                    <div className="rounded-2xl border border-orange-500/20 bg-orange-500/5 p-4 flex items-start gap-3 animate-in zoom-in-95 duration-300">
-                                        <div className="mt-0.5 w-8 h-8 rounded-xl border border-orange-500/20 bg-orange-500/10 text-orange-300 flex items-center justify-center shrink-0">
-                                            <IconUsers className="w-4 h-4" />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-orange-300">Choose a club first</p>
-                                            <p className="text-xs font-semibold leading-relaxed text-orange-100/75">
-                                                Club Session keeps matchmaking inside one joined club, so pick the venue before you search.
-                                            </p>
-                                        </div>
-                                    </div>
-                                )}
-
-                                {error && (
-                                    <div className="bg-red-500/5 border border-red-500/20 rounded-2xl p-4 flex items-center gap-4 animate-in zoom-in-95 duration-300">
-                                        <span className="text-lg">⚠️</span>
-                                        <p className="text-xs font-bold text-red-400 leading-relaxed">{error}</p>
-                                    </div>
-                                )}
-
-                                <button
-                                    onClick={handleJoinQueue}
-                                    disabled={loading || !sport || userSports.length === 0 || (activeMode === "ranked" && !rankedUnlocked) || clubModeBlocked}
-                                    className="relative group w-full bg-white text-zinc-950 font-black py-5 rounded-2xl transition-all hover:scale-[1.02] active:scale-[0.98] disabled:opacity-40 shadow-2xl shadow-white/5 overflow-hidden flex items-center justify-center gap-3"
-                                >
-                                    <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/0 via-cyan-500/10 to-cyan-500/0 -translate-x-full group-hover:animate-[shimmer_1.5s_infinite]" />
-                                    <span className="relative z-10 text-xs tracking-[0.2em] uppercase">{primaryActionLabel}</span>
-                                    {!loading && <IconChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />}
-                                </button>
-
-                                {(format === "doubles" || format === "mixed_doubles") && (
-                                    <div className="pt-2 border-t border-zinc-800/50 text-center">
-                                        <Link
-                                            href="/matches/party"
-                                            className="text-[11px] font-bold text-zinc-500 hover:text-violet-400 tracking-wider uppercase transition-colors"
-                                        >
-                                            Prefer a fixed partner? Duo Queue instead →
-                                        </Link>
-                                    </div>
-                                )}
                             </div>
-                            
-                            {/* Stats summary */}
-                            <div className="flex items-center justify-between px-8 text-[10px] font-black text-zinc-600 tracking-[0.2em] uppercase">
-                                <div className="flex items-center gap-2">
-                                    <div className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
-                                    <span>{format === "singles" ? `${selectedModeMeta.shortLabel} lane active` : `${selectedModeMeta.shortLabel} team lane active`}</span>
-                                </div>
-                                <span>{format === "singles" ? selectedModeMeta.waitHint : activeMode === "ranked" ? "Ranked teams only" : "Duo Queue is faster"}</span>
-                            </div>
+
+                            <aside className="space-y-6">
+                                {/* Match Feed (Contextual Info) */}
+                                <section className="rounded-2xl sm:rounded-3xl border border-white/5 bg-[#0a111a]/80 p-5 sm:p-6 space-y-4">
+                                    <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Match Feed</p>
+                                    <div className="space-y-4">
+                                        <div className="flex gap-3 sm:gap-4 items-start">
+                                            <span className="text-lg sm:text-xl">📡</span>
+                                            <p className="text-[9px] sm:text-[10px] font-medium text-slate-400 leading-relaxed">System is optimized for <span className="text-cyan-400 font-bold">Same Skill</span> matching. Skill fit is prioritized to ensure competitive integrity.</p>
+                                        </div>
+                                        <div className="flex gap-3 sm:gap-4 items-start">
+                                            <span className="text-lg sm:text-xl">📍</span>
+                                            <p className="text-[9px] sm:text-[10px] font-medium text-slate-400 leading-relaxed">Venue network is active. We are prioritizing players within <span className="text-cyan-400 font-bold">Nearby Range</span> for efficiency.</p>
+                                        </div>
+                                    </div>
+                                </section>
+                            </aside>
                         </div>
-                    )}
 
-                    {/* ── QUEUED — AI Scanning (1v1) ── */}
-                    {queueState === "queued" && selectedMeta && (
-                        <div className="space-y-8">
-                            <div className="text-center space-y-2">
-                                <StatusBadge state={queueState} />
-                                <h1 className="text-3xl font-black tracking-tight uppercase italic">Searching Arena</h1>
-                                <p className="text-zinc-500 text-xs font-bold tracking-widest uppercase">
-                                    {selectedMeta.label} · 1v1 Protocol
-                                </p>
-                            </div>
-
-                            {/* Animated radar */}
-                            <div className="flex justify-center relative py-8">
-                                <div className="relative w-48 h-48">
-                                    <div className="absolute inset-0 rounded-full border-2 border-cyan-500/10 animate-[ping_3s_linear_infinite]" />
-                                    <div className="absolute inset-4 rounded-full border-2 border-cyan-500/20 animate-[ping_3s_linear_infinite_0.5s]" />
-                                    <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-cyan-500 border-r-cyan-500/30 animate-[spin_2s_linear_infinite]" />
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <div className="bg-zinc-900 w-20 h-20 rounded-full flex items-center justify-center border-2 border-cyan-500/30 shadow-2xl relative">
-                                            <div className="absolute inset-0 bg-cyan-500/10 blur-xl rounded-full" />
-                                            <span className="text-4xl relative">{selectedMeta.emoji}</span>
+                        {/* Step Indicators (Moved to bottom) */}
+                        <section className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-3">
+                            {STEPS.map((step, index) => {
+                                const state = index + 1 < activeStep
+                                    ? "border-emerald-500/20 bg-emerald-500/5 text-emerald-400"
+                                    : index + 1 === activeStep
+                                        ? "border-cyan-500/20 bg-cyan-500/10 text-cyan-400"
+                                        : "border-white/5 bg-white/[0.02] text-slate-500";
+                                return (
+                                    <div key={step.n} className={`relative overflow-hidden rounded-xl sm:rounded-2xl border p-4 sm:p-5 transition-all ${state}`}>
+                                        <div className="flex items-center gap-3 sm:gap-4">
+                                            <span className="text-xs sm:text-sm font-black italic opacity-40">{step.n}</span>
+                                            <div>
+                                                <h3 className="text-[10px] sm:text-xs font-black uppercase tracking-widest text-white">{step.t}</h3>
+                                                <p className="mt-0.5 sm:mt-1 text-[9px] sm:text-[10px] font-medium opacity-70 leading-tight">{step.d}</p>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            </div>
+                                );
+                            })}
+                        </section>
+                    </div>
+                )}
 
-                            {/* AI status card */}
-                            <div className="bg-zinc-900/40 backdrop-blur-xl border border-cyan-500/20 rounded-[2rem] p-8 space-y-6 shadow-2xl relative overflow-hidden">
-                                <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-600/5 blur-3xl -mr-16 -mt-16" />
-                                
-                                <div className="flex items-center gap-4 min-h-[3rem] relative">
-                                    <div className="w-12 h-12 bg-zinc-950/50 rounded-xl flex items-center justify-center text-2xl border border-zinc-800 shadow-inner">
-                                        {aiStep.icon}
-                                    </div>
-                                    <div className="flex-1">
-                                        <p className={`text-[10px] font-black text-cyan-400/60 uppercase tracking-widest mb-1`}>Neural Sequence</p>
-                                        <p className="text-sm font-black text-white">{aiStep.msg}</p>
-                                    </div>
-                                    <div className="flex gap-1.5">
-                                        {[0,1,2].map(i => (
-                                            <div key={i} className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse"
-                                                style={{ animationDelay: `${i * 0.2}s` }} />
-                                        ))}
+                {/* SEARCHING STATE */}
+                {(queueState === "queued" || queueState === "assembling" || queueState === "optimizing") && selectedMeta && (
+                    <div className="mx-auto max-w-4xl space-y-6 sm:space-y-8 animate-in fade-in duration-500">
+                        <section className="relative overflow-hidden rounded-[1.5rem] sm:rounded-[2.5rem] border border-cyan-500/20 bg-[#0a111a]/90 backdrop-blur-xl p-6 sm:p-8 lg:p-12 shadow-[0_0_100px_rgba(6,182,212,0.1)]">
+                            <HUDCorner className="top-4 left-4 sm:top-8 sm:left-8" />
+                            <HUDCorner className="top-4 right-4 sm:top-8 sm:right-8 rotate-90" />
+                            <HUDCorner className="bottom-4 left-4 sm:bottom-8 sm:left-8 -rotate-90" />
+                            <HUDCorner className="bottom-4 right-4 sm:bottom-8 sm:right-8 rotate-180" />
+
+                            <div className="flex flex-col items-center text-center space-y-8 sm:space-y-12">
+                                <div className="space-y-3 sm:space-y-4">
+                                    <StatusBadge state={queueState} />
+                                    <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black uppercase italic tracking-tight text-white leading-tight">
+                                        Searching for <span className="text-cyan-400">{selectedMeta.label}</span> fit
+                                    </h1>
+                                    <p className="text-sm sm:text-lg text-slate-400 font-light max-w-2xl">
+                                        {queueMode === "ranked"
+                                            ? "ISMS is executing ranked matching protocols. The ML model scans calibrated players for fair skill parity and rating confidence."
+                                            : "ISMS is running normal calibration matchmaking. These results build the match history needed before ranked ML matching unlocks."}
+                                    </p>
+                                </div>
+
+                                <div className="relative flex h-48 w-48 sm:h-64 sm:w-64 items-center justify-center">
+                                    <div className="absolute inset-0 rounded-full border border-cyan-500/10 animate-scanline" />
+                                    <div className="absolute inset-0 rounded-full border-2 border-cyan-500/20 animate-ping" />
+                                    <div className="absolute inset-2 sm:inset-4 rounded-full border border-cyan-500/10 animate-pulse" />
+
+                                    <div className="relative h-32 w-32 sm:h-40 sm:w-40 overflow-hidden rounded-2xl sm:rounded-3xl border border-cyan-500/30 bg-cyan-500/5 flex flex-col items-center justify-center group">
+                                        <Image src={selectedMeta.image} alt={selectedMeta.label} fill className="object-cover opacity-20" />
+                                        <span className="relative z-10 text-3xl sm:text-4xl font-black italic text-cyan-400">{selectedMeta.code}</span>
+                                        <div className="absolute inset-0 bg-gradient-to-t from-[#0a111a] via-transparent to-transparent opacity-60" />
                                     </div>
                                 </div>
 
-                                <div className="space-y-3 pt-6 border-t border-zinc-800/50">
-                                    <p className="text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-4">Metric Affinity Scan</p>
-                                    {[
-                                        { label: "Rating Match",    pct: 97, color: "bg-cyan-500" },
-                                        { label: "Combat History",  pct: 72, color: "bg-violet-500" },
-                                        { label: "Proximity",       pct: 58, color: "bg-blue-500" },
-                                        { label: "Surface Type",    pct: 89, color: "bg-emerald-500" },
-                                    ].map(f => (
-                                        <div key={f.label} className="flex items-center gap-4">
-                                            <span className="text-[10px] font-bold text-zinc-500 w-24 uppercase tracking-tighter">{f.label}</span>
-                                            <div className="flex-1 h-1 bg-zinc-950 rounded-full overflow-hidden border border-zinc-800/30">
-                                                <div
-                                                    className={`h-full ${f.color} rounded-full animate-pulse transition-all duration-1000`}
-                                                    style={{ width: `${f.pct}%` }}
-                                                />
-                                            </div>
-                                            <span className="text-[10px] font-black text-zinc-700 w-8 text-right font-mono">{f.pct}%</span>
+                                <div className="grid gap-3 sm:gap-4 w-full grid-cols-1 sm:grid-cols-3">
+                                    {[{ l: "Elapsed Time", v: elapsed },
+                                      { l: "Protocol", v: format === "singles" ? "Solo Ops" : format === "mixed_doubles" ? "Mixed Duo" : "Duo Squad" },
+                                      { l: "Queue", v: queueMode === "ranked" ? "Ranked" : "Normal" }].map((stat) => (
+                                        <div key={stat.l} className="rounded-xl sm:rounded-2xl border border-white/5 bg-white/5 p-4 sm:p-5">
+                                            <p className="text-[8px] sm:text-[10px] font-bold uppercase tracking-widest text-slate-500">{stat.l}</p>
+                                            <p className="mt-1 sm:mt-2 text-xl sm:text-2xl font-black italic text-white leading-none">{stat.v}</p>
                                         </div>
                                     ))}
                                 </div>
 
-                                <div className="flex items-center justify-between pt-4 text-[11px] font-bold">
-                                    <div className="flex items-center gap-2 text-zinc-500">
-                                        <span className="w-1 h-1 rounded-full bg-zinc-700" />
-                                        <span>ACTIVE TIME: {elapsed}</span>
+                                <div className="w-full max-w-md space-y-3 sm:space-y-4">
+                                    <div className="flex justify-between items-end">
+                                        <div className="text-left min-w-0">
+                                            <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-cyan-500">Current Action</p>
+                                            <h3 className="text-base sm:text-lg font-bold text-white uppercase italic tracking-tight truncate">{(format === "singles" ? singlesStep : doublesStep).title}</h3>
+                                        </div>
+                                        <span className="text-[10px] sm:text-xs font-black text-cyan-400 animate-pulse shrink-0">EXECUTING...</span>
                                     </div>
-                                    <div className="px-3 py-1 rounded-full bg-zinc-950/50 border border-zinc-800 text-cyan-600 text-[9px] font-black tracking-widest uppercase shadow-inner">
-                                        System Polling (3s)
+                                    <div className="h-1 sm:h-1.5 w-full bg-white/5 overflow-hidden rounded-full">
+                                        <div className="h-full bg-cyan-500 transition-all duration-1000 animate-shimmer" style={{ width: "60%" }} />
                                     </div>
+                                    <p className="text-[9px] sm:text-[10px] text-slate-500 font-medium">{(format === "singles" ? singlesStep : doublesStep).note}</p>
                                 </div>
-                            </div>
 
-                            <button
-                                onClick={handleLeaveQueue}
-                                className="w-full py-4 bg-zinc-950/40 hover:bg-zinc-800 border border-zinc-800 text-zinc-500 hover:text-zinc-200 font-black rounded-2xl transition-all text-[10px] uppercase tracking-[0.2em] active:scale-[0.98]"
-                            >
-                                Abort Matchmaking
-                            </button>
+                                <button
+                                    type="button"
+                                    onClick={() => void handleLeaveQueue()}
+                                    className="px-6 sm:px-8 py-2.5 sm:py-3 rounded-lg sm:rounded-xl border border-rose-500/20 bg-rose-500/5 text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-rose-400 transition hover:bg-rose-500/10 active:scale-95"
+                                >
+                                    Cancel Search
+                                </button>
+                            </div>
+                        </section>
+                    </div>
+                )}
+
+                {/* MATCHED STATE */}
+                {queueState === "matched" && selectedMeta && (
+                    <div className="mx-auto max-w-4xl text-center space-y-12 py-6 sm:py-12 animate-in zoom-in-95 duration-500">
+                        <div className="space-y-4">
+                            <StatusBadge state="matched" />
+                            <h1 className="text-3xl sm:text-5xl font-black uppercase italic tracking-tight text-white">
+                                Match <span className="text-emerald-400">Secured</span>
+                            </h1>
+                            <p className="text-[10px] sm:text-lg text-slate-400 font-light max-w-xl mx-auto uppercase tracking-widest italic">
+                                Initializing match room. Skill parity and venue overlap verified.
+                            </p>
                         </div>
-                    )}
 
-                    {/* ── ASSEMBLING / OPTIMIZING — 2v2 ── */}
-                    {(queueState === "assembling" || queueState === "optimizing") && selectedMeta && (
-                        <div className="space-y-8">
-                            <div className="text-center space-y-2">
-                                <StatusBadge state={queueState} />
-                                <h1 className="text-3xl font-black tracking-tight uppercase italic">
-                                    {isOptimizing ? "Tactical Split" : "Team Assembly"}
-                                </h1>
-                                <p className="text-zinc-500 text-xs font-bold tracking-widest uppercase">
-                                    {selectedMeta.label} · 2v2 Protocol
-                                </p>
+                        {/* Player Pairing Visualization */}
+                        <div className="relative py-8">
+                            <div className="absolute inset-0 flex items-center justify-center opacity-10 pointer-events-none">
+                                <div className="text-[120px] font-black italic tracking-tighter text-white animate-pulse">VS</div>
                             </div>
 
-                            <div className="bg-zinc-900/40 backdrop-blur-xl border border-purple-500/20 rounded-[2.5rem] p-8 space-y-8 shadow-2xl relative overflow-hidden">
-                                <div className="absolute top-0 right-0 w-32 h-32 bg-purple-600/5 blur-3xl -mr-16 -mt-16" />
-                                
-                                <div className="grid grid-cols-2 gap-3">
-                                    {[1, 2, 3, 4].map(n => {
-                                        const filled = n <= playersJoined;
-                                        const isMe   = n === 1 && playersJoined >= 1;
-                                        return (
-                                            <div
-                                                key={n}
-                                                className={`flex items-center gap-3 border rounded-2xl px-4 py-4 transition-all duration-700 shadow-lg ${
-                                                    filled
-                                                        ? isMe
-                                                            ? "border-cyan-500/30 bg-cyan-500/5 shadow-cyan-500/5"
-                                                            : "border-purple-500/30 bg-purple-500/5 shadow-purple-500/5"
-                                                        : "border-zinc-800/50 bg-zinc-950/20"
-                                                }`}
-                                            >
-                                                <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-black flex-shrink-0 border shadow-inner ${
-                                                    filled
-                                                        ? isMe ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/30" : "bg-purple-500/20 text-purple-300 border-purple-500/30"
-                                                        : "bg-zinc-900 text-zinc-700 border-zinc-800"
-                                                }`}>
-                                                    {filled ? (isMe ? "YOU" : "OK") : n}
+                            <div className="relative z-10 flex flex-col md:flex-row items-center justify-center gap-8 md:gap-16">
+                                {/* Team 1 / Player 1 */}
+                                <div className="flex flex-col items-center gap-4 animate-in slide-in-from-left duration-700">
+                                    <div className="flex -space-x-4">
+                                        {matchedProfiles.length > 0 ? (
+                                            matchedProfiles.slice(0, isTeamFormat(format) ? 2 : 1).map((p, i) => (
+                                                <div key={p.id || i} className="relative h-20 w-20 sm:h-24 sm:w-24 overflow-hidden rounded-[2rem] border-2 border-emerald-500 bg-[#0a111a] shadow-[0_0_30px_rgba(16,185,129,0.2)]">
+                                                    {p.avatar_url ? (
+                                                        <Image src={p.avatar_url} alt={`${p.first_name} ${p.last_name}`} fill className="object-cover" />
+                                                    ) : (
+                                                        <div className="flex h-full w-full items-center justify-center bg-white/5 text-2xl font-black text-slate-500">
+                                                            {(p.first_name ?? "?")[0].toUpperCase()}
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                <div className="min-w-0">
-                                                    <p className={`text-[10px] font-black uppercase tracking-widest truncate ${
-                                                        filled
-                                                            ? isMe ? "text-cyan-400" : "text-purple-400"
-                                                            : "text-zinc-600"
-                                                    }`}>
-                                                        {filled ? (isMe ? "Synced" : "Locked") : "Empty"}
+                                            ))
+                                        ) : (
+                                            <div className="h-24 w-24 rounded-[2rem] border-2 border-emerald-500/20 bg-white/5 animate-pulse" />
+                                        )}
+                                    </div>
+                                    <div className="text-center">
+                                        <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">Team Alpha</p>
+                                        <div className="space-y-0.5">
+                                            {matchedProfiles.length > 0 ? (
+                                                matchedProfiles.slice(0, isTeamFormat(format) ? 2 : 1).map((p, i) => (
+                                                    <p key={p.id || i} className="text-sm font-black text-white uppercase italic leading-tight">
+                                                        {`${p.first_name || ''} ${p.last_name || ''}`.trim() || "Player"}
                                                     </p>
-                                                    <p className="text-[9px] font-bold text-zinc-500 uppercase tracking-tighter">SLOT {n}</p>
+                                                ))
+                                            ) : (
+                                                <p className="text-sm font-black text-white/20 uppercase animate-pulse">Scanning...</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="hidden md:flex h-12 w-px bg-gradient-to-b from-transparent via-emerald-500/50 to-transparent" />
+
+                                {/* Team 2 / Player 2 */}
+                                <div className="flex flex-col items-center gap-4 animate-in slide-in-from-right duration-700">
+                                    <div className="flex -space-x-4">
+                                        {matchedProfiles.length > 0 ? (
+                                            matchedProfiles.slice(isTeamFormat(format) ? 2 : 1, isTeamFormat(format) ? 4 : 2).map((p, i) => (
+                                                <div key={p.id || i} className="relative h-20 w-20 sm:h-24 sm:w-24 overflow-hidden rounded-[2rem] border-2 border-cyan-500 bg-[#0a111a] shadow-[0_0_30px_rgba(6,182,212,0.2)]">
+                                                    {p.avatar_url ? (
+                                                        <Image src={p.avatar_url} alt={`${p.first_name} ${p.last_name}`} fill className="object-cover" />
+                                                    ) : (
+                                                        <div className="flex h-full w-full items-center justify-center bg-white/5 text-2xl font-black text-slate-500">
+                                                            {(p.first_name ?? "?")[0].toUpperCase()}
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-
-                                <div className="space-y-4 pt-4">
-                                    <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-widest">
-                                        <span className="text-zinc-500">Deployment Status</span>
-                                        <span className={isOptimizing ? "text-emerald-400" : "text-purple-400"}>
-                                            {playersJoined} <span className="text-zinc-600">/ 4</span>
-                                        </span>
+                                            ))
+                                        ) : (
+                                            <div className="h-24 w-24 rounded-[2rem] border-2 border-cyan-500/20 bg-white/5 animate-pulse" />
+                                        )}
                                     </div>
-                                    <div className="h-2 bg-zinc-950 rounded-full overflow-hidden border border-zinc-800/50 p-0.5">
-                                        <div
-                                            className={`h-full rounded-full transition-all duration-1000 relative ${
-                                                isOptimizing ? "bg-emerald-500" : "bg-purple-500"
-                                            }`}
-                                            style={{ width: `${(playersJoined / 4) * 100}%` }}
-                                        >
-                                            <div className="absolute inset-0 bg-white/20 animate-[shimmer_2s_infinite]" />
+                                    <div className="text-center">
+                                        <p className="text-[10px] font-black text-cyan-500 uppercase tracking-widest mb-1">Team Bravo</p>
+                                        <div className="space-y-0.5">
+                                            {matchedProfiles.length > 0 ? (
+                                                matchedProfiles.slice(isTeamFormat(format) ? 2 : 1, isTeamFormat(format) ? 4 : 2).map((p, i) => (
+                                                    <p key={p.id || i} className="text-sm font-black text-white uppercase italic leading-tight">
+                                                        {`${p.first_name || ''} ${p.last_name || ''}`.trim() || "Player"}
+                                                    </p>
+                                                ))
+                                            ) : (
+                                                <p className="text-sm font-black text-white/20 uppercase animate-pulse">Scanning...</p>
+                                            )}
                                         </div>
                                     </div>
-                                </div>
-
-                                <div className="border-t border-zinc-800/50 pt-6 flex items-center gap-4 min-h-[3rem]">
-                                    <div className={`w-12 h-12 bg-zinc-950/50 rounded-xl flex items-center justify-center text-2xl border border-zinc-800 shadow-inner ${isOptimizing ? "text-emerald-400" : "text-purple-400"}`}>
-                                        {dblStep.icon}
-                                    </div>
-                                    <div className="flex-1">
-                                        <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${isOptimizing ? "text-emerald-400/60" : "text-purple-400/60"}`}>
-                                            {isOptimizing ? "Heuristic Balancing" : "Pool Acquisition"}
-                                        </p>
-                                        <p className="text-sm font-black text-white">{dblStep.msg}</p>
-                                    </div>
-                                    {isOptimizing ? (
-                                        <div className="flex gap-1">
-                                            {[0,1,2].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" style={{ animationDelay: `${i*0.2}s` }} />)}
-                                        </div>
-                                    ) : (
-                                        <div className="flex gap-1">
-                                            {[0,1,2].map(i => <div key={i} className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" style={{ animationDelay: `${i*0.2}s` }} />)}
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div className="flex items-center justify-between text-[11px] font-bold text-zinc-500 uppercase tracking-tighter">
-                                    <div className="flex items-center gap-2">
-                                        <span className="w-1 h-1 rounded-full bg-zinc-700" />
-                                        <span>ELAPSED: {elapsed}</span>
-                                    </div>
-                                    <span>Monitoring Active</span>
                                 </div>
                             </div>
-
-                            <button
-                                onClick={handleLeaveQueue}
-                                className="w-full py-4 bg-zinc-950/40 hover:bg-zinc-800 border border-zinc-800 text-zinc-500 hover:text-zinc-200 font-black rounded-2xl transition-all text-[10px] uppercase tracking-[0.2em] active:scale-[0.98]"
-                            >
-                                Leave Assembly
-                            </button>
                         </div>
-                    )}
 
-                    {/* ── MATCHED — Success Transition ── */}
-                    {queueState === "matched" && selectedMeta && (
-                        <div className="bg-zinc-900/40 backdrop-blur-2xl border border-emerald-500/40 rounded-[2.5rem] p-12 flex flex-col items-center gap-8 text-center shadow-[0_0_50px_rgba(16,185,129,0.1)] animate-in zoom-in-95 duration-500 relative overflow-hidden">
-                            <div className="absolute inset-0 bg-gradient-to-b from-emerald-500/5 to-transparent pointer-events-none" />
-                            
-                            <div className="space-y-4">
-                                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 mb-2">
-                                    <span className="relative flex h-2 w-2">
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                        <div className="max-w-md mx-auto space-y-6">
+                            <div className="overflow-hidden rounded-2xl border border-white/5 bg-[#0a111a] shadow-2xl">
+                                <div className="h-2 w-full bg-white/5">
+                                    <div className="h-full bg-gradient-to-r from-emerald-500 via-cyan-500 to-emerald-500 animate-[matchProgress_4.5s_linear_forwards]" />
+                                </div>
+                                <div className="flex items-center justify-between px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-500">
+                                    <span className="flex items-center gap-2">
+                                        <span className="w-1 h-1 rounded-full bg-emerald-500 animate-pulse" />
+                                        Preparing Room
                                     </span>
-                                    <span className="text-[10px] font-black tracking-widest text-emerald-400 uppercase italic">Hostility Detected</span>
-                                </div>
-                                <h1 className="text-4xl font-black tracking-tight text-white uppercase italic">Combat Ready</h1>
-                                <p className="text-zinc-500 text-sm max-w-[280px] mx-auto font-medium">
-                                    Neutral engine has finalized a high-affinity pairing.
-                                </p>
-                            </div>
-
-                            <div className="relative">
-                                <div className="absolute inset-0 bg-emerald-500 blur-3xl opacity-20 animate-pulse" />
-                                <div className={`relative w-40 h-40 rounded-3xl bg-zinc-950 border-2 border-emerald-500/40 flex flex-col items-center justify-center gap-3 shadow-2xl overflow-hidden`}>
-                                    <span className="text-6xl filter drop-shadow-lg leading-none">{selectedMeta.emoji}</span>
-                                    <span className="text-[10px] font-black text-emerald-400 uppercase tracking-widest">{selectedMeta.label}</span>
+                                    <span>Lobby Transit</span>
                                 </div>
                             </div>
 
-                            <div className="w-full space-y-4">
-                                <div className="h-1.5 bg-zinc-950 rounded-full overflow-hidden border border-zinc-800/50 p-0.5">
-                                    <div className="h-full bg-gradient-to-r from-emerald-600 to-teal-400 animate-[progress_3.5s_linear_forwards] relative">
-                                        <div className="absolute inset-0 bg-white/20 animate-[shimmer_1.5s_infinite]" />
-                                    </div>
-                                </div>
-                                <div className="flex items-center justify-between text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em]">
-                                    <span>Syncing Arena State</span>
-                                    <span className="text-emerald-500/60">Finalizing...</span>
-                                </div>
-                            </div>
-
-                            <style jsx>{`
-                                @keyframes progress {
-                                    from { width: 0%; }
-                                    to { width: 100%; }
-                                }
-                            `}</style>
+                            <p className="text-[10px] font-black text-white/20 uppercase tracking-[0.5em] animate-pulse">
+                                Entering Match Lobby
+                            </p>
                         </div>
-                    )}
 
-                </div>
+                        <style jsx>{`
+                            @keyframes matchProgress {
+                                from { width: 0%; }
+                                to { width: 100%; }
+                            }
+                        `}</style>
+                    </div>
+                )}
             </main>
         </div>
+    );
+}
+
+// --- Reusable Sub-Components ---
+
+function Empty({ title, note, href, action }: { title: string; note: string; href?: string; action?: string }) {
+    return (
+        <div className="relative overflow-hidden rounded-[2rem] border border-white/5 bg-white/[0.02] p-12 text-center group">
+            <div className="relative z-10 space-y-6">
+                <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-2xl bg-white/5 text-4xl opacity-40 group-hover:opacity-60 transition-opacity">🗂️</div>
+                <div className="space-y-2">
+                    <h3 className="text-xl font-black uppercase italic tracking-tight text-white/60">{title}</h3>
+                    <p className="mx-auto max-w-sm text-sm font-light text-slate-500 leading-relaxed">{note}</p>
+                </div>
+                {href && action && (
+                    <Link href={href} className="inline-block rounded-xl bg-white px-10 py-4 text-xs font-black uppercase tracking-widest text-black transition hover:bg-slate-200">
+                        {action}
+                    </Link>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function Widget({ title, children }: { title: string; children: ReactNode }) {
+    return (
+        <section className="relative overflow-hidden rounded-3xl border border-white/5 bg-[#0a111a]/80 backdrop-blur-lg p-6 shadow-xl group">
+            <div className="absolute top-0 left-0 w-1 h-12 bg-cyan-500/50 rounded-full translate-y-6 opacity-40" />
+            <div className="mb-6">
+                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">{title}</p>
+            </div>
+            {children}
+        </section>
     );
 }

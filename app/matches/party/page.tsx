@@ -1,140 +1,209 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element */
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
 import NavBar from "@/components/NavBar";
 
-// ── Types ──────────────────────────────────────────────────────────────────────
+// --- Types ---
+
+interface Rating {
+    sport: string;
+    match_format: string;
+    rating: number;
+    rating_status: "CALIBRATING" | "RATED";
+    calibration_matches_played: number;
+    is_matchmaking_eligible?: boolean;
+    is_leaderboard_eligible?: boolean;
+    matchmaking_target?: number;
+    leaderboard_target?: number;
+    matches_played?: number;
+}
+
+type PartyMatchFormat = "doubles" | "mixed_doubles";
+type PartyQueueMode = "normal" | "ranked";
 
 interface PartyMember {
-    user_id:  string;
-    username: string | null;
-    role:     "leader" | "member";
+    user_id: string;
+    role: "leader" | "member";
+    avatar_url?: string | null;
+    first_name?: string | null;
+    last_name?: string | null;
+    ratings?: Rating[];
+    gender?: "male" | "female" | "other" | null;
 }
 
 interface PendingInvite {
-    invitation_id:    string;
-    invitee_id:       string;
-    invitee_username: string | null;
+    invitation_id: string;
+    invitee_id: string;
+    invitee_first_name: string | null;
+    invitee_last_name: string | null;
 }
 
 interface Party {
-    id:              string;
-    sport:           string;
-    match_format:    string;
-    status:          "forming" | "ready" | "in_queue" | "match_found" | "disbanded";
-    leader_id:       string;
-    members:         PartyMember[];
+    id: string;
+    sport: string;
+    match_format: string;
+    status: "forming" | "ready" | "in_queue" | "match_found" | "disbanded";
+    leader_id: string;
+    members: PartyMember[];
     pending_invites: PendingInvite[];
-    match_id:         string | null;
+    match_id: string | null;
     queue_started_at: string | null;
 }
 
 type CardState = "no_party" | "forming" | "invite_sent" | "ready" | "in_queue" | "match_found";
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+const PARTY_QUEUE_TIMEOUT_SECONDS = 180;
 
-const SPORTS_META: Record<string, { label: string; emoji: string; accent: string; border: string; bg: string; gradient: string }> = {
-    pickleball:   { label: "Pickleball",   emoji: "🏓", accent: "text-cyan-400",    border: "border-cyan-500/30",    bg: "bg-cyan-500/5",    gradient: "from-cyan-500/20 to-blue-600/20" },
-    badminton:    { label: "Badminton",    emoji: "🏸", accent: "text-purple-400",  border: "border-purple-500/30",  bg: "bg-purple-500/5",  gradient: "from-purple-500/20 to-pink-600/20" },
-    lawn_tennis:  { label: "Lawn Tennis",  emoji: "🎾", accent: "text-emerald-400", border: "border-emerald-500/30", bg: "bg-emerald-500/5", gradient: "from-emerald-500/20 to-teal-600/20" },
-    table_tennis: { label: "Table Tennis", emoji: "🏓", accent: "text-orange-400",  border: "border-orange-500/30",  bg: "bg-orange-500/5",  gradient: "from-orange-500/20 to-red-600/20" },
+const SPORTS_META: Record<string, { label: string; image: string; accent: string; border: string; tint: string; code: string; icon: string }> = {
+    pickleball: { label: "Pickleball", image: "/sports/pickleball.jpg.png", accent: "text-cyan-400", border: "border-cyan-500/30", tint: "bg-cyan-500/5", code: "PB", icon: "🎾" },
+    badminton: { label: "Badminton", image: "/sports/badminton.jpg.png", accent: "text-fuchsia-400", border: "border-fuchsia-500/30", tint: "bg-fuchsia-500/5", code: "BD", icon: "🏸" },
+    lawn_tennis: { label: "Lawn Tennis", image: "/sports/lawn-tennis.jpg.png", accent: "text-emerald-400", border: "border-emerald-500/30", tint: "bg-emerald-500/5", code: "LT", icon: "🎾" },
+    table_tennis: { label: "Table Tennis", image: "/sports/table-tennis.jpg.png", accent: "text-amber-400", border: "border-amber-500/30", tint: "bg-amber-500/5", code: "TT", icon: "🏓" },
 };
 
-const FORMAT_LABELS: Record<string, string> = {
-    doubles:       "2v2 Doubles",
-    mixed_doubles: "2v2 Mixed Doubles",
-};
-
-function cardState(party: Party | null, _myId: string | null): CardState {
+function cardState(party: Party | null): CardState {
     if (!party) return "no_party";
     if (party.status === "disbanded") return "no_party";
     if (party.status === "match_found") return "match_found";
     if (party.status === "in_queue") return "in_queue";
     if (party.status === "ready") return "ready";
-    // forming: check if invite has been sent
-    if (party.pending_invites.length > 0) return "invite_sent";
+    if ((party.pending_invites?.length ?? 0) > 0) return "invite_sent";
     return "forming";
 }
 
-// ── Icons ──────────────────────────────────────────────────────────────────────
-
-function IconSearch({ className = "w-5 h-5" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 105 11a6 6 0 0012 0z" /></svg>;
+function ratingFor(member: PartyMember, sport: string, format: string) {
+    return member.ratings?.find(r => r.sport === sport && r.match_format === format);
 }
 
-function IconUsers({ className = "w-5 h-5" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>;
+function isMlReady(member: PartyMember, sport: string, format: string) {
+    const r = ratingFor(member, sport, format);
+    return Boolean(r?.is_matchmaking_eligible);
 }
 
-function IconX({ className = "w-4 h-4" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
+function memberLabel(member: PartyMember) {
+    return `${member.first_name || ''} ${member.last_name || ''}`.trim() || "Player";
 }
 
-function IconChevronRight({ className = "w-4 h-4" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" /></svg>;
+function isMixedDoublesDuo(members: PartyMember[]) {
+    if (members.length !== 2) return false;
+    const hasMale = members.some(m => m.gender === "male");
+    const hasFemale = members.some(m => m.gender === "female");
+    return hasMale && hasFemale;
 }
 
-function IconShield({ className = "w-5 h-5" }) {
-    return <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>;
+function partyQueueModeLabel(mode: PartyQueueMode) {
+    return mode === "ranked" ? "Ranked Search" : "Normal Search";
 }
 
-// ── Components ─────────────────────────────────────────────────────────────────
+// --- HUD Helper Components ---
 
-function Background() {
+function HUDCorner({ className = "" }: { className?: string }) {
     return (
-        <div className="fixed inset-0 -z-10 overflow-hidden pointer-events-none">
-            <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-violet-600/10 blur-[120px] animate-pulse" />
-            <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-cyan-600/10 blur-[120px] animate-pulse [animation-delay:2s]" />
-            <div className="absolute top-[20%] right-[15%] w-[20%] h-[20%] rounded-full bg-indigo-600/5 blur-[80px]" />
+        <svg className={`absolute w-3 h-3 sm:w-4 sm:h-4 text-white/20 ${className}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M24 0H0V24" strokeLinecap="square" />
+        </svg>
+    );
+}
+
+function InfoIcon({ text }: { text: string }) {
+    const [show, setShow] = useState(false);
+    return (
+        <div className="relative inline-block ml-1.5" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+            <button type="button" className="flex h-4 w-4 items-center justify-center rounded-full border border-white/20 bg-white/5 text-[10px] text-slate-400 transition hover:border-cyan-400 hover:text-cyan-400">
+                ?
+            </button>
+            {show && (
+                <div className="absolute bottom-full left-1/2 z-[100] mb-2 w-48 -translate-x-1/2 rounded-lg border border-white/10 bg-[#0a111a] p-3 text-[10px] leading-relaxed text-slate-300 shadow-2xl animate-in fade-in slide-in-from-bottom-2">
+                    {text}
+                </div>
+            )}
         </div>
     );
 }
 
 function StatusBadge({ state }: { state: CardState }) {
     const config = {
-        no_party:    { label: "New Party",   color: "text-zinc-400 bg-zinc-800/50 border-zinc-700/50" },
-        forming:     { label: "Forming",     color: "text-zinc-400 bg-zinc-800/50 border-zinc-700/50" },
-        invite_sent: { label: "Invited",     color: "text-amber-400 bg-amber-500/10 border-amber-500/30" },
-        ready:       { label: "Ready",       color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" },
-        in_queue:    { label: "In Queue",    color: "text-cyan-400 bg-cyan-500/10 border-cyan-500/30 animate-pulse" },
-        match_found: { label: "Found!",      color: "text-violet-400 bg-violet-500/10 border-violet-500/30" },
+        no_party: { label: "NEW PARTY", color: "border-white/10 bg-white/5 text-slate-500" },
+        forming: { label: "FORMING", color: "border-cyan-500/20 bg-cyan-500/5 text-cyan-400" },
+        invite_sent: { label: "INVITATION SENT", color: "border-amber-500/20 bg-amber-500/5 text-amber-400" },
+        ready: { label: "SQUAD READY", color: "border-emerald-500/20 bg-emerald-500/5 text-emerald-400" },
+        in_queue: { label: "IN QUEUE", color: "border-cyan-500/30 bg-cyan-500/10 text-cyan-400 animate-pulse" },
+        match_found: { label: "MATCH SECURED", color: "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-400" },
     }[state];
 
     return (
-        <span className={`text-[10px] font-black tracking-widest uppercase px-3 py-1 rounded-full border shadow-sm ${config.color}`}>
+        <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full border text-[9px] sm:text-[10px] font-black tracking-[0.2em] uppercase ${config.color}`}>
+            <span className={`w-1 h-1 sm:w-1.5 sm:h-1.5 rounded-full ${state !== "no_party" ? "bg-current animate-pulse" : "bg-white/20"}`} />
             {config.label}
-        </span>
+        </div>
     );
 }
 
-// ── Player search dropdown ─────────────────────────────────────────────────────
+function RatingDisplay({ ratings, sport }: { ratings?: Rating[], sport: string }) {
+    const singles = ratings?.find(r => r.sport === sport && r.match_format === "singles");
+    const doubles = ratings?.find(r => r.sport === sport && r.match_format === "doubles");
+    const mixed = ratings?.find(r => r.sport === sport && r.match_format === "mixed_doubles");
 
-interface PlayerResult {
-    id:       string;
-    username: string;
-    rating:   number | null;
+    const renderRating = (r?: Rating, label = "") => {
+        if (!r) return (
+            <div className="text-right">
+                <p className="text-[7px] sm:text-[8px] font-bold text-slate-600 uppercase">{label}</p>
+                <p className="text-[9px] sm:text-[10px] font-black text-slate-500">---</p>
+            </div>
+        );
+        if (r.rating_status === "CALIBRATING") {
+            const mlTarget = r.matchmaking_target ?? 10;
+            const mlReady = Boolean(r.is_matchmaking_eligible);
+            const progressText = mlReady ? "ML READY" : `-${Math.max(0, mlTarget - (r.calibration_matches_played || 0))}`;
+            return (
+            <div className="text-right">
+                <p className="text-[7px] sm:text-[8px] font-bold text-slate-600 uppercase">{label}</p>
+                <p className={`text-[9px] font-black tracking-tighter italic ${mlReady ? "text-cyan-400/80" : "text-amber-500/70"}`}>{progressText}</p>
+            </div>
+        );
+        }
+        return (
+            <div className="text-right">
+                <p className="text-[7px] sm:text-[8px] font-bold text-slate-600 uppercase">{label}</p>
+                <p className="text-xs sm:text-sm font-black text-white italic">{Math.round(r.rating)}</p>
+            </div>
+        );
+    };
+
+    return (
+        <div className="flex gap-2 sm:gap-4">
+            {renderRating(singles, "S")}
+            {renderRating(doubles, "D")}
+            {renderRating(mixed, "M")}
+        </div>
+    );
 }
 
-function PlayerSearchInput({
-    onSelect,
-    disabled,
-}: {
-    onSelect: (p: PlayerResult) => void;
-    disabled?: boolean;
-}) {
-    const [query, setQuery]     = useState("");
+// --- Player Search Dropdown ---
+
+interface PlayerResult {
+    id: string;
+    first_name: string | null;
+    last_name: string | null;
+    avatar_url: string | null;
+    rating: number | null;
+}
+
+function PlayerSearchInput({ onSelect, disabled }: { onSelect: (p: PlayerResult) => void; disabled?: boolean }) {
+    const [query, setQuery] = useState("");
     const [results, setResults] = useState<PlayerResult[]>([]);
-    const [open, setOpen]       = useState(false);
-    const debounce              = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const wrapRef               = useRef<HTMLDivElement>(null);
+    const [open, setOpen] = useState(false);
+    const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const wrapRef = useRef<HTMLDivElement>(null);
 
     const search = useCallback(async (q: string) => {
         if (q.length < 2) { setResults([]); setOpen(false); return; }
         const token = getAccessToken();
-        const res   = await fetch(`/api/players/search?q=${encodeURIComponent(q)}`, {
+        const res = await fetch(`/api/players/search?q=${encodeURIComponent(q)}`, {
             headers: { Authorization: `Bearer ${token}` },
         });
         if (!res.ok) return;
@@ -149,43 +218,49 @@ function PlayerSearchInput({
     }, [query, search]);
 
     useEffect(() => {
-        function onClick(e: MouseEvent) {
-            if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-        }
+        const onClick = (e: MouseEvent) => { if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false); };
         document.addEventListener("mousedown", onClick);
         return () => document.removeEventListener("mousedown", onClick);
     }, []);
 
     return (
-        <div ref={wrapRef} className="relative z-50">
-            <div className="flex items-center gap-2 bg-zinc-900/80 backdrop-blur-sm border border-zinc-700/50 rounded-2xl px-4 py-3 group focus-within:border-violet-500/50 transition-all shadow-lg">
-                <IconSearch className="w-5 h-5 text-zinc-500 group-focus-within:text-violet-400 transition-colors shrink-0" />
+        <div ref={wrapRef} className="relative">
+            <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-xl sm:rounded-2xl px-4 py-3 sm:px-5 sm:py-4 group focus-within:border-cyan-500/50 transition-all shadow-xl">
+                <svg className="w-4 h-4 sm:w-5 sm:h-5 text-slate-500 group-focus-within:text-cyan-400 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 105 11a6 6 0 0012 0z" /></svg>
                 <input
                     value={query}
                     onChange={e => setQuery(e.target.value)}
-                    placeholder="Search partner by username…"
+                    placeholder="Search by name..."
                     disabled={disabled}
-                    className="flex-1 bg-transparent text-white placeholder-zinc-500 outline-none"
+                    className="flex-1 bg-transparent text-xs sm:text-sm font-bold placeholder-slate-600 outline-none"
                 />
             </div>
             {open && results.length > 0 && (
-                <ul className="absolute top-full mt-2 left-0 right-0 bg-zinc-900/95 backdrop-blur-md border border-zinc-700/50 rounded-2xl overflow-hidden shadow-2xl z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                <ul className="absolute top-full mt-2 left-0 right-0 bg-[#0a111a] border border-white/10 rounded-xl sm:rounded-2xl overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.5)] z-[100] animate-in fade-in slide-in-from-top-2 max-h-[240px] overflow-y-auto">
                     {results.map(p => (
                         <li key={p.id}>
                             <button
-                                className="w-full flex items-center gap-4 px-4 py-3.5 hover:bg-zinc-800/80 text-left transition-all group"
+                                className="w-full flex items-center gap-3 sm:gap-4 px-4 py-3 sm:px-6 sm:py-4 hover:bg-white/5 text-left transition-all group"
                                 onMouseDown={e => { e.preventDefault(); onSelect(p); setQuery(""); setOpen(false); }}
                             >
-                                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-violet-500/20 to-indigo-500/20 flex items-center justify-center text-sm font-bold text-violet-300 border border-violet-500/20 group-hover:scale-110 transition-transform">
-                                    {p.username[0]?.toUpperCase()}
-                                </div>
-                                <div className="flex-1">
-                                    <span className="block text-sm font-bold text-white group-hover:text-violet-300 transition-colors">@{p.username}</span>
-                                    {p.rating != null && (
-                                        <span className="text-[10px] font-bold text-zinc-500 tracking-wider">SKILL RATING: {Math.round(p.rating)}</span>
+                                <div className="h-8 w-8 sm:h-10 sm:w-10 shrink-0 rounded-full border border-white/10 overflow-hidden bg-white/5">
+                                    {p.avatar_url ? (
+                                        <img src={p.avatar_url} alt={`${p.first_name} ${p.last_name}`} className="h-full w-full object-cover" />
+                                    ) : (
+                                        <div className="h-full w-full flex items-center justify-center font-black text-cyan-400 bg-cyan-500/10 text-xs sm:text-sm">
+                                            {p.first_name?.[0]?.toUpperCase()}
+                                        </div>
                                     )}
                                 </div>
-                                <IconChevronRight className="w-4 h-4 text-zinc-700 group-hover:text-violet-400 group-hover:translate-x-1 transition-all" />
+                                <div className="flex-1 min-w-0">
+                                    <span className="block text-xs sm:text-sm font-black text-white group-hover:text-cyan-400 transition-colors truncate">
+                                        {`${p.first_name || ''} ${p.last_name || ''}`.trim() || p.id.slice(0, 8)}
+                                    </span>
+                                    {p.rating != null && (
+                                        <span className="text-[8px] sm:text-[10px] font-bold text-slate-500 tracking-widest uppercase">ELO: {Math.round(p.rating)}</span>
+                                    )}
+                                </div>
+                                <svg className="w-3 h-3 sm:w-4 sm:h-4 text-slate-700 group-hover:text-cyan-400 group-hover:translate-x-1 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M9 5l7 7-7 7" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
                             </button>
                         </li>
                     ))}
@@ -195,127 +270,204 @@ function PlayerSearchInput({
     );
 }
 
-// ── Duo Queue Card ─────────────────────────────────────────────────────────────
+// --- Player Slots ---
 
-function PlayerSlot({ member, isYou, label }: { member: PartyMember | null; isYou?: boolean; label?: string }) {
+function PlayerSlot({ member, isYou, label, sport }: { member: PartyMember | null; isYou?: boolean; label: string; sport: string }) {
     if (!member) {
         return (
-            <div className="flex items-center gap-4 p-4 rounded-2xl bg-zinc-900/40 border border-dashed border-zinc-800 group transition-all">
-                <div className="w-12 h-12 rounded-full bg-zinc-900 border-2 border-dashed border-zinc-800 flex items-center justify-center group-hover:border-zinc-700 transition-colors">
-                    <span className="text-zinc-700 text-xl font-black group-hover:text-zinc-600">?</span>
-                </div>
-                <div>
-                    <p className="text-xs font-bold text-zinc-600 tracking-widest uppercase mb-0.5">{label ?? "Partner"}</p>
-                    <p className="text-sm font-medium text-zinc-500">Waiting for invitation…</p>
+            <div className="relative group overflow-hidden rounded-[1.5rem] sm:rounded-[2rem] border border-dashed border-white/10 bg-white/[0.02] p-6 sm:p-8 transition-all hover:bg-white/[0.04]">
+                <div className="flex flex-col items-center gap-4 sm:gap-6 py-2 sm:py-4">
+                    <div className="h-14 w-14 sm:h-20 sm:w-20 rounded-full border-2 sm:border-4 border-dashed border-white/5 bg-black/20 flex items-center justify-center group-hover:border-cyan-500/20 transition-colors">
+                        <span className="text-xl sm:text-3xl font-black text-white/5 group-hover:text-white/10">?</span>
+                    </div>
+                    <div className="text-center">
+                        <p className="text-[8px] sm:text-[10px] font-black text-cyan-500/50 uppercase tracking-[0.4em] mb-1 sm:mb-2">{label}</p>
+                        <p className="text-xs sm:text-sm font-bold text-slate-600">Waiting for Intel...</p>
+                    </div>
                 </div>
             </div>
         );
     }
+
     return (
-        <div className={`flex items-center gap-4 p-4 rounded-2xl border transition-all shadow-lg ${
-            isYou ? "bg-violet-500/5 border-violet-500/20" : "bg-zinc-900/60 border-zinc-800"
+        <div className={`relative overflow-hidden rounded-[1.5rem] sm:rounded-[2rem] border p-5 sm:p-8 shadow-2xl transition-all ${
+            isYou ? "border-cyan-500/30 bg-[#0a1420] ring-1 sm:ring-2 ring-cyan-500/10" : "border-white/5 bg-[#0a111a]"
         }`}>
-            <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-black border shadow-inner ${
-                isYou 
-                    ? "bg-violet-500/20 text-violet-300 border-violet-500/30" 
-                    : "bg-zinc-800 text-zinc-400 border-zinc-700/50"
-            }`}>
-                {member.username?.[0]?.toUpperCase() ?? "?"}
-            </div>
-            <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                    <p className="text-base font-black text-white truncate">@{member.username}</p>
-                    {isYou && (
-                        <span className="text-[9px] font-black tracking-tighter text-violet-400 bg-violet-500/10 px-1.5 py-0.5 rounded-md uppercase border border-violet-500/20">You</span>
+            <HUDCorner className="top-3 left-3 sm:top-4 sm:left-4" />
+            <HUDCorner className="bottom-3 right-3 sm:bottom-4 sm:right-4 rotate-180" />
+            
+            <div className="flex flex-col items-center gap-6 sm:gap-8">
+                <div className="relative">
+                    <div className={`absolute inset-0 rounded-full blur-2xl opacity-20 ${isYou ? "bg-cyan-500" : "bg-white"}`} />
+                    <div className={`relative h-16 w-16 sm:h-24 sm:w-24 rounded-full border sm:border-2 overflow-hidden shadow-2xl ${isYou ? "border-cyan-500/50" : "border-white/10"}`}>
+                        {member.avatar_url ? (
+                            <img src={member.avatar_url} alt={`${member.first_name} ${member.last_name}`} className="h-full w-full object-cover" />
+                        ) : (
+                            <div className={`h-full w-full flex items-center justify-center text-xl sm:text-3xl font-black italic ${isYou ? "bg-cyan-500/10 text-cyan-400" : "bg-white/5 text-slate-400"}`}>
+                                {member.first_name?.[0]?.toUpperCase()}
+                            </div>
+                        )}
+                    </div>
+                    {member.role === "leader" && (
+                        <div className="absolute -bottom-1 -right-1 flex h-6 w-6 sm:h-8 sm:w-8 items-center justify-center rounded-full bg-amber-500 text-black border-2 sm:border-4 border-[#0a111a] text-[10px] sm:text-xs shadow-xl" title="Party Leader">
+                            👑
+                        </div>
                     )}
                 </div>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                    {member.role === "leader" && <IconShield className="w-3 h-3 text-amber-500" />}
-                    <p className="text-[10px] font-bold text-zinc-500 tracking-wider uppercase">
-                        {member.role === "leader" ? "Party Leader" : "Team Member"}
-                    </p>
-                </div>
-            </div>
-            <div className="flex flex-col items-end gap-1">
-                <div className="flex gap-0.5">
-                    {[1,2,3].map(i => <div key={i} className={`w-1 h-1 rounded-full ${isYou ? "bg-violet-500/30" : "bg-zinc-800"}`} />)}
+
+                <div className="w-full space-y-4 sm:space-y-6 text-center">
+                    <div className="space-y-1">
+                        <p className="text-[8px] sm:text-[10px] font-black text-cyan-500 uppercase tracking-[0.4em]">{label} {isYou && "(YOU)"}</p>
+                        <h3 className="text-xl sm:text-2xl font-black italic tracking-tight text-white uppercase truncate">{`${member.first_name || ''} ${member.last_name || ''}`.trim() || "Player"}</h3>
+                        <p className="text-[8px] sm:text-[10px] font-bold text-slate-600 uppercase tracking-widest">{member.role === "leader" ? "Commanding Officer" : "Tactical Specialist"}</p>
+                    </div>
+
+                    <div className="pt-4 sm:pt-6 border-t border-white/5">
+                        <div className="flex items-center justify-between mb-3 sm:mb-4">
+                            <p className="text-[8px] sm:text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">Service Ratings</p>
+                            <InfoIcon text="Current performance metrics. If calibrating, complete more matches to establish ELO." />
+                        </div>
+                        <RatingDisplay ratings={member.ratings} sport={sport} />
+                    </div>
                 </div>
             </div>
         </div>
     );
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────────
+// --- Main Page Component ---
 
 export default function PartyQueuePage() {
     const router = useRouter();
 
-    const [myId,    setMyId]    = useState<string | null>(null);
-    const [party,   setParty]   = useState<Party | null>(null);
+    const [myId, setMyId] = useState<string | null>(null);
+    const [myProfile, setMyProfile] = useState<PartyMember | null>(null);
+    const [party, setParty] = useState<Party | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error,   setError]   = useState<string | null>(null);
-    const [busy,    setBusy]    = useState(false);
-    const [searchKey, setSearchKey] = useState(0); // bump to reset PlayerSearchInput
+    const [error, setError] = useState<string | null>(null);
+    const [queueNotice, setQueueNotice] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [searchKey, setSearchKey] = useState(0);
     const [confirmLeave, setConfirmLeave] = useState(false);
 
-    // Create-party form
-    const [sport,        setSport]        = useState("pickleball");
-    const [matchFormat,  setMatchFormat]  = useState("doubles");
-
-    // Queue timer — ticks every second, elapsed is computed from server's queue_started_at
+    const [sport, setSport] = useState("pickleball");
+    const [matchFormat, setMatchFormat] = useState<PartyMatchFormat>("doubles");
+    const [queueMode, setQueueMode] = useState<PartyQueueMode>("normal");
     const [now, setNow] = useState(Date.now());
     const queueTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+    const queueTimeoutHandled = useRef(false);
 
-    const state: CardState = cardState(party, myId);
+    const state: CardState = cardState(party);
+    const meta = SPORTS_META[sport] || SPORTS_META.pickleball;
 
-    // ── Fetch my party ─────────────────────────────────────────────────────────
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const params = new URLSearchParams(window.location.search);
+        const nextSport = params.get("sport");
+        const nextFormat = params.get("format");
+        const nextMode = params.get("mode");
+        if (nextSport && SPORTS_META[nextSport]) {
+            setSport(nextSport);
+        }
+        if (nextFormat === "doubles" || nextFormat === "mixed_doubles") {
+            setMatchFormat(nextFormat);
+        }
+        if (nextMode === "normal" || nextMode === "ranked") {
+            setQueueMode(nextMode);
+        }
+    }, []);
+
     const fetchParty = useCallback(async () => {
         const token = getAccessToken();
-        if (!token) { router.push("/login"); return; }
+        if (!token) { router.push("/login"); return null; }
         try {
-            const res = await fetch("/api/parties/me", {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (isUnauthorized(res.status)) { clearAuthSession(); router.push("/login"); return; }
+            const res = await fetch("/api/parties/me", { headers: { Authorization: `Bearer ${token}` } });
+            if (isUnauthorized(res.status)) { clearAuthSession(); router.push("/login"); return null; }
             const data = await res.json();
-            setParty(data.party ?? null);
+            if (data.queue_timed_out) {
+                setQueueNotice("Queue paused after 3 minutes. You can continue searching when your duo is ready.");
+            }
+            
+            if (data.party) {
+                if (data.party.sport && SPORTS_META[data.party.sport]) {
+                    setSport(data.party.sport);
+                }
+                if (data.party.match_format === "doubles" || data.party.match_format === "mixed_doubles") {
+                    setMatchFormat(data.party.match_format as PartyMatchFormat);
+                }
+                const membersWithProfiles = await Promise.all(data.party.members.map(async (m: PartyMember) => {
+                    const profileRes = await fetch(`/api/players/${m.user_id}`, { headers: { Authorization: `Bearer ${token}` } });
+                    if (profileRes.ok) {
+                        const profileData = await profileRes.json();
+                        return { ...m, ...profileData.profile, ratings: profileData.ratings };
+                    }
+                    return m;
+                }));
+                const updatedParty = { ...data.party, members: membersWithProfiles };
+                setParty(updatedParty);
+                return updatedParty;
+            } else {
+                setParty(null);
+                return null;
+            }
         } catch {
-            // ignore network errors on poll
+            return null;
         }
     }, [router]);
 
-    // ── Boot ───────────────────────────────────────────────────────────────────
     useEffect(() => {
         (async () => {
             const token = getAccessToken();
             if (!token) { router.push("/login"); return; }
-            // Get my profile id
-            const me = await fetch("/api/players/me", { headers: { Authorization: `Bearer ${token}` } });
-            if (isUnauthorized(me.status)) { clearAuthSession(); router.push("/login"); return; }
-            const meData = await me.json();
-            setMyId(meData.profile?.id ?? meData.id ?? meData.user_id ?? null);
-            await fetchParty();
+            
+            const meRes = await fetch("/api/players/me", { headers: { Authorization: `Bearer ${token}` } });
+            if (isUnauthorized(meRes.status)) { clearAuthSession(); router.push("/login"); return; }
+            const meData = await meRes.json();
+            const meId = meData.profile?.id ?? meData.id;
+            setMyId(meId);
+            setMyProfile({
+                user_id: meId,
+                role: "leader",
+                avatar_url: meData.profile?.avatar_url,
+                first_name: meData.profile?.first_name,
+                last_name: meData.profile?.last_name,
+                ratings: meData.ratings,
+                gender: meData.profile?.gender
+            });
+
+            const currentParty = await fetchParty();
+            
+            if (!currentParty) {
+                const params = new URLSearchParams(window.location.search);
+                const s = params.get("sport") || "pickleball";
+                const f = params.get("format");
+                const formatToUse: PartyMatchFormat = (f === "doubles" || f === "mixed_doubles") ? f : "doubles";
+                
+                try {
+                    const createRes = await fetch("/api/parties", {
+                        method: "POST",
+                        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                        body: JSON.stringify({ sport: s, match_format: formatToUse }),
+                    });
+                    if (createRes.ok) {
+                        await fetchParty();
+                    }
+                } catch (e) {
+                    console.error("Auto-create party failed", e);
+                }
+            }
+            
             setLoading(false);
         })();
     }, [router, fetchParty]);
 
-    // ── Poll in invite_sent state (waiting for partner to respond) ────────────
     useEffect(() => {
-        if (state === "invite_sent") {
+        if (state === "invite_sent" || state === "ready") {
             const id = setInterval(fetchParty, 4000);
             return () => clearInterval(id);
         }
     }, [state, fetchParty]);
 
-    // ── Poll in ready state — partner needs to know when leader starts queue ──
-    useEffect(() => {
-        if (state === "ready") {
-            const id = setInterval(fetchParty, 3000);
-            return () => clearInterval(id);
-        }
-    }, [state, fetchParty]);
-
-    // ── Poll while in queue ────────────────────────────────────────────────────
     useEffect(() => {
         if (state === "in_queue") {
             const id = setInterval(fetchParty, 3000);
@@ -327,30 +479,31 @@ export default function PartyQueuePage() {
         }
     }, [state, fetchParty]);
 
-    // ── Redirect to match when found ───────────────────────────────────────────
     useEffect(() => {
         if (state !== "match_found" || !party?.match_id) return;
-        // Verify the match isn't invalidated before redirecting
         const token = getAccessToken();
         if (!token) return;
         fetch(`/api/matches/${party.match_id}`, { headers: { Authorization: `Bearer ${token}` } })
-            .then(r => r.json())
+            .then(async (r) => {
+                if (r.status === 404) return null;
+                if (!r.ok) throw new Error("Failed to load match.");
+                return r.json();
+            })
             .then(d => {
+                if (!d) {
+                    void fetchParty();
+                    return;
+                }
                 const s = d?.status ?? d?.match?.status;
                 if (s && s !== "invalidated" && s !== "cancelled") {
-                    const target = s === "awaiting_players"
-                        ? `/matches/${party.match_id}/lobby`
-                        : `/matches/${party.match_id}`;
-                    router.push(target);
+                    router.push(s === "awaiting_players" ? `/matches/${party.match_id}/lobby` : `/matches/${party.match_id}`);
                 } else {
-                    // Match is dead — force a re-fetch so backend disbands the party
-                    fetchParty();
+                    void fetchParty();
                 }
             })
-            .catch(() => { router.push(`/matches/${party.match_id}/lobby`); });
+            .catch(() => { void fetchParty(); });
     }, [state, party, router, fetchParty]);
 
-    // ── Actions ────────────────────────────────────────────────────────────────
     async function apiCall(path: string, method = "POST", body?: object) {
         setBusy(true);
         setError(null);
@@ -362,10 +515,10 @@ export default function PartyQueuePage() {
                 body: body ? JSON.stringify(body) : undefined,
             });
             const data = await res.json();
-            if (!res.ok) throw new Error(data.detail ?? "Something went wrong");
+            if (!res.ok) throw new Error(data.detail ?? "Protocol Failure");
             return data;
         } catch (e: unknown) {
-            setError(e instanceof Error ? e.message : "Error");
+            setError(e instanceof Error ? e.message : "Protocol Failure");
             return null;
         } finally {
             setBusy(false);
@@ -374,474 +527,279 @@ export default function PartyQueuePage() {
 
     async function handleCreate() {
         const data = await apiCall("/parties", "POST", { sport, match_format: matchFormat });
-        if (data) setParty(data);
+        if (data) fetchParty();
     }
 
     async function handleInvite(player: PlayerResult) {
         if (!party) return;
         const data = await apiCall(`/parties/${party.id}/invite`, "POST", { invitee_id: player.id });
         if (data) {
-            setParty(data);
+            fetchParty();
         } else {
-            // Reset the search input so the user can try a different player
             setSearchKey(k => k + 1);
         }
     }
 
-    async function handleCancelInvite(invitationId: string) {
-        const data = await apiCall(`/parties/invitation/${invitationId}`, "DELETE");
-        if (data) setParty(data);
+    async function handleCancelInvite(invId: string) {
+        if (!party) return;
+        await apiCall(`/parties/invitation/${invId}`, "DELETE");
+        fetchParty();
     }
 
-    async function handleQueueJoin() {
+    async function handleLeave() {
         if (!party) return;
-        const data = await apiCall(`/parties/${party.id}/queue`);
+        await apiCall(`/parties/${party.id}/disband`, "POST");
+        setParty(null);
+        setConfirmLeave(false);
+    }
+
+    async function handleStartQueue(mode: PartyQueueMode) {
+        if (!party) return;
+        const blockers = mode === "ranked" ? rankedQueueBlockers : normalQueueBlockers;
+        if (blockers.length > 0) {
+            setError(blockers[0]);
+            return;
+        }
+        setQueueMode(mode);
+        setQueueNotice(null);
+        const data = await apiCall(`/parties/${party.id}/queue`, "POST", { match_mode: mode });
+        if (data) fetchParty();
+    }
+
+    async function handleStopQueue(notice?: string) {
+        if (!party) return;
+        const data = await apiCall(`/parties/${party.id}/leave-queue`, "POST");
         if (data) {
-            // Match found immediately — redirect the leader straight to the match
-            if (data.status === "matched" && data.match_id) {
-                const token = getAccessToken();
-                if (!token) { router.push(`/matches/${data.match_id}/lobby`); return; }
-                try {
-                    const res = await fetch(`/api/matches/${data.match_id}`, {
-                        headers: { Authorization: `Bearer ${token}` },
-                    });
-                    const detail = await res.json();
-                    const s = detail?.status ?? detail?.match?.status;
-                    const target = s === "awaiting_players"
-                        ? `/matches/${data.match_id}/lobby`
-                        : `/matches/${data.match_id}`;
-                    router.push(target);
-                } catch {
-                    router.push(`/matches/${data.match_id}/lobby`);
-                }
-                return;
-            }
-            await fetchParty();
+            if (notice) setQueueNotice(notice);
+            fetchParty();
         }
     }
 
-    async function handleLeaveQueue() {
-        if (!party) return;
-        const data = await apiCall(`/parties/${party.id}/leave-queue`);
-        if (data) await fetchParty();
-    }
+    const host = party?.members?.find(m => m.role === "leader") || myProfile;
+    const partner = party?.members?.find(m => m.role === "member");
+    const isLeader = party?.leader_id === myId;
+    const squadMembers = [host, partner].filter((member): member is PartyMember => Boolean(member));
+    
+    const normalQueueBlockers = state === "ready"
+        ? [
+            ...(squadMembers.length !== 2 ? ["Party must have exactly two members before queueing."] : []),
+            ...(matchFormat === "mixed_doubles" && !isMixedDoublesDuo(squadMembers)
+                ? ["Mixed doubles requires one male and one female player."]
+                : []),
+        ]
+        : [];
+        
+    const rankedQueueBlockers = state === "ready"
+        ? [
+            ...normalQueueBlockers,
+            ...squadMembers
+                .filter(member => !isMlReady(member, sport, matchFormat))
+                .map(member => {
+                    const rating = ratingFor(member, sport, matchFormat);
+                    const target = rating?.matchmaking_target ?? 10;
+                    const played = rating?.calibration_matches_played ?? rating?.matches_played ?? 0;
+                    const remaining = Math.max(0, target - played);
+                    return `${memberLabel(member)} needs ${remaining} more ${matchFormat.replace("_", " ")} calibration match${remaining === 1 ? "" : "es"} for ML ranked queue.`;
+                }),
+        ]
+        : [];
+        
+    const canStartNormalQueue = normalQueueBlockers.length === 0 && !busy;
+    const canStartRankedQueue = rankedQueueBlockers.length === 0 && !busy;
+    const queueBlockers = queueMode === "ranked" ? rankedQueueBlockers : normalQueueBlockers;
+    
+    const elapsed = party?.queue_started_at ? Math.floor((now - new Date(party.queue_started_at).getTime()) / 1000) : 0;
+    const formatElapsed = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    const formatLabel = matchFormat === "mixed_doubles" ? "Mixed Duo" : "2v2 Duo";
+    const formatDescription = matchFormat === "mixed_doubles"
+        ? "one male and one female partner"
+        : "a tactical partner";
 
-    async function handleDisband() {
-        if (!party) return;
-        await apiCall(`/parties/${party.id}/disband`);
-        setParty(null);
-    }
+    useEffect(() => {
+        if (state !== "in_queue") {
+            queueTimeoutHandled.current = false;
+            return;
+        }
+        if (!isLeader || busy || queueTimeoutHandled.current || elapsed < PARTY_QUEUE_TIMEOUT_SECONDS) return;
+        queueTimeoutHandled.current = true;
+        void handleStopQueue("Queue paused after 3 minutes. You can continue searching when your duo is ready.");
+    }, [busy, elapsed, isLeader, state]);
 
-    // ── Render ─────────────────────────────────────────────────────────────────
     if (loading) {
         return (
-            <>
-                <NavBar />
-                <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
-                    <div className="w-8 h-8 border-2 border-violet-500/30 border-t-violet-500 rounded-full animate-spin" />
+            <div className="min-h-screen bg-[#050b14] text-white">
+                <div className="flex min-h-screen items-center justify-center">
+                    <div className="px-8 py-4 rounded-2xl border border-white/5 bg-white/[0.02] text-xs font-black uppercase tracking-widest text-slate-500 animate-pulse">
+                        Synchronizing Party Link...
+                    </div>
                 </div>
-            </>
+            </div>
         );
     }
 
-    const sportMeta  = SPORTS_META[party?.sport ?? sport] ?? SPORTS_META.pickleball;
-    const myMember   = party?.members.find(m => m.user_id === myId) ?? null;
-    const partnerMem = party?.members.find(m => m.user_id !== myId) ?? null;
-    const isLeader   = party ? party.leader_id === myId : true;
-    const fmtLabel   = FORMAT_LABELS[party?.match_format ?? matchFormat] ?? "Doubles";
-    const queueSecs  = party?.queue_started_at
-        ? Math.max(0, Math.floor((now - new Date(party.queue_started_at).getTime()) / 1000))
-        : 0;
-    const queueTime  = `${String(Math.floor(queueSecs / 60)).padStart(2, "0")}:${String(queueSecs % 60).padStart(2, "0")}`;
-
     return (
-        <div className="relative min-h-screen bg-zinc-950 text-white overflow-x-hidden">
-            <NavBar />
-            <Background />
-            
-            <div className="pt-24 pb-12 px-4">
-                <div className="max-w-lg mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+        <div className="min-h-screen bg-[#050b14] text-white selection:bg-cyan-500/30 font-sans">
+            <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(16,36,60,0.4)_0%,transparent_50%)]" />
+                <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)", backgroundSize: "40px 40px" }} />
+                <div className="absolute inset-0 animate-scanline pointer-events-none opacity-[0.02] bg-[linear-gradient(transparent,rgba(255,255,255,0.5),transparent)] h-20" />
+            </div>
 
-                    {/* Header */}
-                    <div className="text-center space-y-2">
-                        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-violet-500/10 border border-violet-500/20 mb-2">
-                            <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-violet-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-violet-500"></span>
-                            </span>
-                            <span className="text-[10px] font-black tracking-widest text-violet-400 uppercase">Competitive Duo Queue</span>
+            <NavBar hideLogo backHref={`/matches/queue?sport=${sport}&format=${matchFormat}&mode=${queueMode}`} />
+
+            <main className="relative z-10 mx-auto max-w-[1400px] px-4 py-8 pb-32 sm:px-6 lg:px-8 pt-20 sm:pt-24">
+                
+                <div className="flex flex-col gap-8 sm:gap-12">
+                    
+                    {/* Header Command */}
+                    <header className="flex flex-col md:flex-row md:items-end justify-between gap-6 sm:gap-8">
+                        <div className="space-y-3 sm:space-y-4">
+                            <StatusBadge state={state} />
+                            <h1 className="text-3xl sm:text-4xl lg:text-5xl font-black uppercase italic tracking-tight text-white leading-tight">
+                                {formatLabel} <span className="text-cyan-400">Lobby</span>
+                            </h1>
+                            <p className="text-sm sm:text-lg text-slate-400 font-light max-w-xl">
+                                Assemble your team for {meta.label} deployment. Invite {formatDescription} to lock in your squad.
+                            </p>
                         </div>
-                        <h1 className="text-4xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white to-zinc-500">
-                            Play Together
-                        </h1>
-                        <p className="text-zinc-500 text-sm max-w-[280px] mx-auto">
-                            Invite a partner and dominate the court as a synchronized team.
-                        </p>
+                        
+                        {state === "in_queue" && (
+                            <div className="rounded-xl sm:rounded-2xl border border-cyan-500/30 bg-cyan-500/10 px-6 py-3 sm:px-8 sm:py-4 text-center">
+                                <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-cyan-500 mb-1">Elapsed Time</p>
+                                <p className="text-2xl sm:text-3xl font-black italic text-white">{formatElapsed(elapsed)}</p>
+                                <p className="mt-1 text-[8px] sm:text-[10px] font-bold uppercase tracking-widest text-cyan-200/70">
+                                    Auto pause {formatElapsed(Math.max(0, PARTY_QUEUE_TIMEOUT_SECONDS - elapsed))}
+                                </p>
+                            </div>
+                        )}
+                    </header>
+
+                    {/* SQUAD SLOTS */}
+                    <div className="grid gap-4 sm:gap-8 lg:grid-cols-2">
+                        <PlayerSlot label="HOST" member={host || null} isYou={host?.user_id === myId} sport={sport} />
+                        <PlayerSlot label="PARTNER" member={partner || null} isYou={partner?.user_id === myId} sport={sport} />
                     </div>
 
-                    {error && (
-                        <div className="bg-red-500/5 border border-red-500/20 text-red-400 text-sm rounded-2xl p-4 flex flex-col gap-3 shadow-2xl shadow-red-500/5 animate-in zoom-in-95 duration-300">
-                            <div className="flex items-start gap-3">
-                                <span className="mt-0.5">⚠️</span>
-                                <span className="flex-1 font-medium leading-relaxed">{error}</span>
-                                <button onClick={() => setError(null)} className="p-1 hover:bg-red-500/10 rounded-lg transition-colors"><IconX className="w-4 h-4" /></button>
-                            </div>
-                            {error.toLowerCase().includes("already in an active party") && (
-                                <div className="flex items-center gap-3 pt-3 border-t border-red-500/10">
-                                    <p className="text-[11px] text-red-400/60 italic">Maybe they just disbanded? Try refreshing.</p>
-                                    <button
-                                        onClick={() => { setError(null); fetchParty(); }}
-                                        className="ml-auto px-3 py-1.5 rounded-xl bg-red-500/10 border border-red-500/20 text-xs font-black hover:bg-red-500/20 transition-all"
-                                    >
-                                        REFRESH
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
-                    {/* ── STATE: no_party — Create card ── */}
-                    {state === "no_party" && (
-                        <div className="bg-zinc-900/40 backdrop-blur-xl border border-zinc-800/50 rounded-[2.5rem] p-8 space-y-8 shadow-2xl relative overflow-hidden group">
-                            <div className="absolute top-0 right-0 w-32 h-32 bg-violet-600/5 blur-3xl -mr-16 -mt-16 group-hover:bg-violet-600/10 transition-colors" />
+                    {/* COMMAND CONSOLE */}
+                    <section className="relative overflow-hidden rounded-[1.5rem] sm:rounded-[2.5rem] border border-white/5 bg-[#0a111a]/80 backdrop-blur-xl p-5 sm:p-10 shadow-2xl">
+                        <HUDCorner className="top-3 left-3 sm:top-4 sm:left-4" />
+                        <HUDCorner className="top-3 right-3 sm:top-4 sm:right-4 rotate-90" />
+                        
+                        <div className="flex flex-col lg:flex-row gap-8 sm:gap-12 items-start justify-between">
                             
-                            <div className="space-y-1">
-                                <p className="text-xs font-black tracking-[0.2em] text-violet-400 uppercase">Step 1</p>
-                                <h2 className="text-2xl font-black text-white">Initialize Party</h2>
-                            </div>
+                            <div className="flex-1 space-y-6 sm:space-y-8 w-full">
+                                {error && (
+                                    <div className="rounded-xl sm:rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 text-[10px] sm:text-xs font-bold uppercase tracking-widest text-rose-400 animate-in fade-in slide-in-from-top-2">
+                                        {error}
+                                    </div>
+                                )}
 
-                            <div className="space-y-6">
-                                {/* Sport picker */}
-                                <div className="space-y-3">
-                                    <label className="text-[10px] font-black tracking-widest text-zinc-500 uppercase flex justify-between items-center">
-                                        Select Sport
-                                        <span className="w-12 h-px bg-zinc-800" />
-                                    </label>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        {Object.entries(SPORTS_META).map(([key, meta]) => (
-                                            <button
-                                                key={key}
-                                                onClick={() => setSport(key)}
-                                                className={`relative flex items-center gap-3 px-4 py-4 rounded-2xl border transition-all duration-300 group overflow-hidden ${
-                                                    sport === key
-                                                        ? `${meta.border} bg-zinc-900/80 shadow-lg shadow-black/20`
-                                                        : "bg-zinc-950/20 border-zinc-800/50 text-zinc-500 hover:border-zinc-700"
-                                                }`}
-                                            >
-                                                {sport === key && (
-                                                    <div className={`absolute inset-0 bg-gradient-to-br ${meta.gradient} opacity-100`} />
-                                                )}
-                                                <span className={`relative text-2xl transition-transform duration-500 ${sport === key ? "scale-110" : "grayscale opacity-50 group-hover:grayscale-0 group-hover:opacity-100"}`}>
-                                                    {meta.emoji}
-                                                </span>
-                                                <span className={`relative text-sm font-bold ${sport === key ? "text-white" : "group-hover:text-zinc-300"}`}>
-                                                    {meta.label}
-                                                </span>
-                                            </button>
+                                {queueNotice && (
+                                    <div className="rounded-xl sm:rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 text-[10px] sm:text-xs font-bold uppercase tracking-widest text-cyan-300 animate-in fade-in slide-in-from-top-2">
+                                        {queueNotice}
+                                    </div>
+                                )}
+
+                                {state === "ready" && queueBlockers.length > 0 && (
+                                    <div className="rounded-xl sm:rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 sm:p-5 space-y-2 sm:space-y-3">
+                                        <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.25em] text-amber-400">Before {partyQueueModeLabel(queueMode)}</p>
+                                        {queueBlockers.map((blocker) => (
+                                            <p key={blocker} className="text-[10px] sm:text-xs font-semibold text-amber-100/80 leading-relaxed">{blocker}</p>
                                         ))}
                                     </div>
-                                </div>
-
-                                {/* Format picker */}
-                                <div className="space-y-3">
-                                    <label className="text-[10px] font-black tracking-widest text-zinc-500 uppercase flex justify-between items-center">
-                                        Match Format
-                                        <span className="w-12 h-px bg-zinc-800" />
-                                    </label>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        {(["doubles", "mixed_doubles"] as const).map(fmt => (
-                                            <button
-                                                key={fmt}
-                                                onClick={() => setMatchFormat(fmt)}
-                                                className={`px-4 py-4 rounded-2xl border text-sm font-bold transition-all ${
-                                                    matchFormat === fmt
-                                                        ? "bg-violet-500/10 border-violet-500/40 text-violet-300 shadow-lg shadow-violet-500/5"
-                                                        : "bg-zinc-950/20 border-zinc-800/50 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300"
-                                                }`}
-                                            >
-                                                {FORMAT_LABELS[fmt]}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-
-                            <button
-                                onClick={handleCreate}
-                                disabled={busy}
-                                className="w-full py-5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 disabled:opacity-50 text-white font-black rounded-2xl transition-all shadow-xl shadow-violet-600/20 active:scale-[0.98] flex items-center justify-center gap-3 group"
-                            >
-                                {busy ? (
-                                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                                ) : (
-                                    <>
-                                        <span>Create Team Lobby</span>
-                                        <IconChevronRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                                    </>
                                 )}
-                            </button>
 
-                            <div className="pt-6 border-t border-zinc-800/50 text-center">
-                                <Link href="/matches/queue" className="text-[11px] font-bold text-zinc-500 hover:text-violet-400 tracking-wider uppercase transition-colors">
-                                    Prefer solo queue? Switch here →
-                                </Link>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ── STATE: forming / invite_sent / ready — Duo Queue Card ── */}
-                    {(state === "forming" || state === "invite_sent" || state === "ready") && party && (
-                        <div className={`bg-zinc-900/40 backdrop-blur-xl border rounded-[2.5rem] p-8 space-y-8 shadow-2xl relative overflow-hidden ${sportMeta.border}`}>
-                            <div className={`absolute top-0 right-0 w-48 h-48 bg-gradient-to-br ${sportMeta.gradient} opacity-10 blur-3xl -mr-24 -mt-24`} />
-                            
-                            {/* Card header */}
-                            <div className="flex items-center justify-between relative">
-                                <div className="flex items-center gap-4">
-                                    <div className={`w-14 h-14 rounded-2xl bg-zinc-900 border ${sportMeta.border} flex items-center justify-center text-3xl shadow-inner`}>
-                                        {sportMeta.emoji}
-                                    </div>
-                                    <div>
-                                        <h2 className="text-xl font-black text-white">{sportMeta.label}</h2>
-                                        <p className={`text-xs font-black tracking-widest uppercase ${sportMeta.accent}`}>{fmtLabel}</p>
-                                    </div>
-                                </div>
-                                <StatusBadge state={state} />
-                            </div>
-
-                            {/* Player slots */}
-                            <div className="grid gap-3">
-                                <PlayerSlot member={myMember} isYou label="You" />
-                                <div className="relative py-1 flex justify-center">
-                                    <div className="absolute inset-0 flex items-center"><div className="w-full h-px bg-zinc-800/50" /></div>
-                                    <div className="relative bg-zinc-900/80 px-4 py-1 rounded-full border border-zinc-800 text-[10px] font-black text-zinc-600 tracking-tighter uppercase backdrop-blur-md">Tactical Duo</div>
-                                </div>
-                                <PlayerSlot member={partnerMem} label="Partner" />
-                            </div>
-
-                            {/* Invite section — only leader & not yet ready */}
-                            {isLeader && state === "forming" && (
-                                <div className="space-y-4 animate-in fade-in slide-in-from-top-4 duration-500">
-                                    <div className="flex items-center gap-2">
-                                        <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
-                                        <label className="text-[10px] font-black tracking-[0.15em] text-zinc-400 uppercase">Recruit your partner</label>
-                                    </div>
-                                    <PlayerSearchInput key={searchKey} onSelect={handleInvite} disabled={busy} />
-                                </div>
-                            )}
-
-                            {/* Invite pending notice */}
-                            {state === "invite_sent" && party.pending_invites[0] && (
-                                <div className="space-y-3 animate-in fade-in duration-500">
-                                    <div className="flex flex-col gap-3 p-5 rounded-2xl bg-amber-500/5 border border-amber-500/20 shadow-lg shadow-amber-500/5">
-                                        <div className="flex items-center gap-4">
-                                            <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center text-xl">📨</div>
-                                            <div className="flex-1">
-                                                <p className="text-sm font-black text-amber-200 uppercase tracking-wide">
-                                                    Invitation Dispatched
-                                                </p>
-                                                <p className="text-[11px] text-zinc-500 font-medium">Waiting for @{party.pending_invites[0].invitee_username ?? "player"} to respond…</p>
-                                            </div>
-                                            <button
-                                                onClick={fetchParty}
-                                                className="p-2 hover:bg-amber-500/10 rounded-xl transition-colors text-amber-400"
-                                                title="Refresh"
-                                            >
-                                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => handleCancelInvite(party.pending_invites[0].invitation_id)}
-                                        disabled={busy}
-                                        className="w-full py-3 text-[10px] font-black text-zinc-500 hover:text-red-400 uppercase tracking-widest transition-colors"
-                                    >
-                                        Retract invitation & choose another
-                                    </button>
-                                </div>
-                            )}
-
-                            {/* Ready CTA */}
-                            {state === "ready" && (
-                                <div className="p-6 rounded-3xl bg-emerald-500/5 border border-emerald-500/20 text-center space-y-2 shadow-lg shadow-emerald-500/5 animate-in zoom-in-95 duration-500">
-                                    <div className="w-12 h-12 bg-emerald-500/10 rounded-2xl flex items-center justify-center text-2xl mx-auto mb-2">🤝</div>
-                                    <p className="text-sm font-black text-emerald-400 uppercase tracking-widest">Team Synchronized</p>
-                                    <p className="text-xs text-zinc-500 max-w-[200px] mx-auto leading-relaxed font-medium">
-                                        {isLeader ? "You are the leader. Initiate the queue sequence when both are ready." : "Awaiting the party leader to initiate the combat sequence…"}
-                                    </p>
-                                    {!isLeader && (
-                                        <div className="flex justify-center pt-2">
-                                            <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-zinc-900 border border-zinc-800 text-[9px] font-black text-zinc-500 tracking-wider">
-                                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                                LIVE MONITORING
-                                            </span>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            {/* Actions */}
-                            <div className="flex gap-3 pt-2">
-                                {state === "ready" && isLeader && (
-                                    <button
-                                        onClick={handleQueueJoin}
-                                        disabled={busy}
-                                        className="flex-[2] py-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black rounded-2xl transition-all shadow-xl shadow-emerald-600/20 active:scale-[0.98] uppercase tracking-widest text-sm"
-                                    >
-                                        {busy ? "Activating…" : "Initialize Queue"}
-                                    </button>
-                                )}
-                                <button
-                                    onClick={handleDisband}
-                                    disabled={busy}
-                                    className="flex-1 py-4 bg-zinc-950/40 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 font-bold rounded-2xl transition-all text-xs uppercase tracking-widest"
-                                >
-                                    {isLeader ? "Disband" : "Leave Party"}
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* ── STATE: in_queue — Waiting spinner ── */}
-                    {state === "in_queue" && party && (
-                        <div className={`bg-zinc-900/40 backdrop-blur-xl border rounded-[2.5rem] p-8 space-y-8 shadow-2xl relative overflow-hidden ${sportMeta.border}`}>
-                            <div className={`absolute top-0 right-0 w-48 h-48 bg-gradient-to-br ${sportMeta.gradient} opacity-10 blur-3xl -mr-24 -mt-24`} />
-                            
-                            <div className="flex items-center justify-between relative">
-                                <div className="flex items-center gap-4">
-                                    <div className={`w-14 h-14 rounded-2xl bg-zinc-900 border ${sportMeta.border} flex items-center justify-center text-3xl shadow-inner`}>
-                                        {sportMeta.emoji}
-                                    </div>
-                                    <div>
-                                        <h2 className="text-xl font-black text-white">{sportMeta.label}</h2>
-                                        <p className={`text-xs font-black tracking-widest uppercase ${sportMeta.accent}`}>{fmtLabel}</p>
-                                    </div>
-                                </div>
-                                <StatusBadge state={state} />
-                            </div>
-
-                            {/* Animated queue indicator */}
-                            <div className="flex flex-col items-center py-6 gap-6 relative">
-                                <div className="relative w-24 h-24">
-                                    <div className="absolute inset-0 rounded-full border-2 border-violet-500/10 animate-[ping_2s_linear_infinite]" />
-                                    <div className="absolute inset-4 rounded-full border-2 border-violet-500/20 animate-[ping_2s_linear_infinite_0.5s]" />
-                                    <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-violet-500 border-r-violet-500/30 animate-[spin_1.5s_linear_infinite]" />
-                                    <div className="absolute inset-0 flex items-center justify-center">
-                                        <div className="bg-zinc-900 w-12 h-12 rounded-full flex items-center justify-center border border-zinc-800 shadow-2xl">
-                                            <IconUsers className="w-6 h-6 text-violet-400" />
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="text-center space-y-1">
-                                    <p className="text-xl font-black text-white tracking-tight uppercase">Scanning for Rivals</p>
-                                    <p className="text-zinc-500 text-[10px] font-bold tracking-widest uppercase">Targeting equivalent duo skillsets</p>
-                                </div>
-                                <div className="px-6 py-2 rounded-2xl bg-zinc-950/50 border border-zinc-800 font-mono text-3xl font-black text-violet-400 tabular-nums shadow-inner">
-                                    {queueTime}
-                                </div>
-                            </div>
-
-                            {/* Team slots */}
-                            <div className="grid gap-3">
-                                <div className="text-[9px] font-black text-zinc-600 uppercase tracking-[0.2em] mb-1">Your Strike Team</div>
-                                <PlayerSlot member={myMember} isYou />
-                                <PlayerSlot member={partnerMem} />
-                            </div>
-
-                            {/* VS divider */}
-                            <div className="flex items-center gap-4 py-2">
-                                <div className="flex-1 h-px bg-gradient-to-r from-transparent to-zinc-800" />
-                                <div className="text-[10px] font-black text-zinc-700 tracking-[0.3em] uppercase">VS</div>
-                                <div className="flex-1 h-px bg-gradient-to-l from-transparent to-zinc-800" />
-                            </div>
-
-                            <div className="flex items-center gap-5 p-5 rounded-2xl bg-zinc-950/40 border border-dashed border-zinc-800/60 relative overflow-hidden group transition-all hover:border-zinc-700">
-                                <div className="relative w-12 h-12">
-                                    <div className="absolute inset-0 rounded-full bg-zinc-900 border-2 border-dashed border-zinc-800 flex items-center justify-center group-hover:border-zinc-700 transition-colors">
-                                        <span className="text-zinc-800 text-xl font-black">?</span>
-                                    </div>
-                                    <div className="absolute inset-0 rounded-full border border-violet-500/20 animate-pulse" />
-                                </div>
-                                <div className="flex-1 space-y-2">
-                                    <p className="text-xs font-black text-zinc-600 uppercase tracking-widest">Searching Targets…</p>
-                                    <div className="flex gap-1.5">
-                                        <div className="w-16 h-1.5 bg-zinc-900 rounded-full overflow-hidden">
-                                            <div className="w-full h-full bg-zinc-800 animate-[shimmer_2s_infinite]" />
-                                        </div>
-                                        <div className="w-12 h-1.5 bg-zinc-900 rounded-full overflow-hidden">
-                                            <div className="w-full h-full bg-zinc-800 animate-[shimmer_2s_infinite_0.5s]" />
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="text-[10px] font-black text-zinc-700 animate-pulse tracking-tighter uppercase">Analyzing</div>
-                            </div>
-
-                            <div className="flex flex-col gap-2">
-                                {isLeader && (
-                                    <button
-                                        onClick={handleLeaveQueue}
-                                        disabled={busy}
-                                        className="w-full py-4 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-500 hover:text-zinc-300 font-bold rounded-2xl transition-all text-xs uppercase tracking-widest active:scale-[0.98]"
-                                    >
-                                        Abort Queue
-                                    </button>
-                                )}
-                                {confirmLeave ? (
-                                    <div className="flex gap-2">
-                                        <button
-                                            onClick={() => setConfirmLeave(false)}
-                                            className="flex-1 py-3 text-sm font-semibold text-zinc-400 hover:text-white border border-zinc-700 hover:border-zinc-500 rounded-2xl transition-all"
-                                        >
-                                            Stay
+                                {state === "no_party" ? (
+                                    <div className="space-y-4 sm:space-y-6">
+                                        <h3 className="text-lg sm:text-xl font-black uppercase italic text-white tracking-tight">Initiate Lobby Protocol</h3>
+                                        <p className="text-xs sm:text-sm text-slate-400 font-light leading-relaxed">To begin a duo search, first establish a squad lobby. This allows you to invite {formatDescription}.</p>
+                                        <button onClick={handleCreate} disabled={busy} className="w-full sm:w-auto group relative overflow-hidden rounded-xl bg-white px-8 py-3.5 sm:px-10 sm:py-4 text-[10px] sm:text-xs font-black uppercase tracking-widest text-black transition hover:scale-105 active:scale-95 disabled:opacity-40">
+                                            {busy ? "Protocol Initializing..." : "Create Lobby"}
                                         </button>
-                                        <button
-                                            onClick={async () => { setConfirmLeave(false); await handleDisband(); }}
-                                            disabled={busy}
-                                            className="flex-1 py-3 text-sm font-semibold text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/60 bg-red-500/5 hover:bg-red-500/10 rounded-2xl transition-all disabled:opacity-50"
-                                        >
-                                            {busy ? "Leaving…" : "Yes, leave"}
+                                    </div>
+                                ) : state === "forming" && isLeader ? (
+                                    <div className="space-y-4 sm:space-y-6">
+                                        <div className="flex items-center gap-2">
+                                            <h3 className="text-lg sm:text-xl font-black uppercase italic text-white tracking-tight">Invite Tactical Partner</h3>
+                                            <InfoIcon text="Search for a player by their name. Once they accept, your duo squad will be locked and ready for deployment." />
+                                        </div>
+                                        <PlayerSearchInput key={searchKey} onSelect={handleInvite} disabled={busy} />
+                                    </div>
+                                ) : state === "invite_sent" && isLeader ? (
+                                    <div className="space-y-4 sm:space-y-6">
+                                        <h3 className="text-lg sm:text-xl font-black uppercase italic text-white tracking-tight">Invitation Pending</h3>
+                                        <div className="rounded-xl sm:rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 sm:p-6 space-y-4">
+                                            <p className="text-xs sm:text-sm text-slate-300 font-light leading-tight">Awaiting response from <span className="text-amber-400 font-bold break-all">{`${party?.pending_invites[0]?.invitee_first_name || ''} ${party?.pending_invites[0]?.invitee_last_name || ''}`.trim() || "Player"}</span></p>
+                                            <button onClick={() => party && handleCancelInvite(party.pending_invites[0].invitation_id)} disabled={busy} className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-amber-500 hover:text-amber-400 transition-colors">
+                                                Withdraw Invitation
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : state === "ready" && isLeader ? (
+                                    <div className="space-y-4 sm:space-y-6">
+                                        <h3 className="text-lg sm:text-xl font-black uppercase italic text-white tracking-tight">Squad Deployed</h3>
+                                        <p className="text-xs sm:text-sm text-slate-400 font-light leading-relaxed">The squad is synchronized. Use normal mode for calibration matches, or ranked mode once both players are ML-ready.</p>
+                                        <div className="grid gap-3 sm:grid-cols-2">
+                                            <button onClick={() => handleStartQueue("normal")} disabled={!canStartNormalQueue} className="group relative overflow-hidden rounded-xl bg-white px-6 py-4 text-[10px] sm:text-xs font-black uppercase tracking-widest text-black transition hover:scale-105 active:scale-95 disabled:opacity-40 disabled:grayscale disabled:hover:scale-100">
+                                                Normal Calibration
+                                            </button>
+                                            <button onClick={() => handleStartQueue("ranked")} disabled={!canStartRankedQueue} className="group relative overflow-hidden rounded-xl bg-cyan-500 px-6 py-4 text-[10px] sm:text-xs font-black uppercase tracking-widest text-black transition hover:scale-105 active:scale-95 shadow-[0_0_40px_rgba(6,182,212,0.3)] disabled:opacity-40 disabled:grayscale disabled:hover:scale-100">
+                                                Ranked ML Match
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : state === "in_queue" && isLeader ? (
+                                    <div className="space-y-4 sm:space-y-6">
+                                        <h3 className="text-lg sm:text-xl font-black uppercase italic text-white tracking-tight">Duo Search Active</h3>
+                                        <p className="text-xs sm:text-sm text-slate-400 font-light leading-relaxed">ISMS is scanning for optimal opponents. The queue will automatically pause after 3 minutes if no match is found.</p>
+                                        <button onClick={() => handleStopQueue()} disabled={busy} className="w-full sm:w-auto rounded-xl border border-rose-500/20 bg-rose-500/5 px-8 py-3.5 sm:px-10 sm:py-4 text-[10px] sm:text-xs font-black uppercase tracking-widest text-rose-500 transition hover:bg-rose-500/10">
+                                            Abort Search
                                         </button>
                                     </div>
                                 ) : (
-                                    <button
-                                        onClick={() => setConfirmLeave(true)}
-                                        className="w-full py-3 text-xs text-zinc-600 hover:text-red-400 border border-transparent hover:border-red-500/20 rounded-2xl transition-all uppercase tracking-widest"
-                                    >
-                                        Leave Party
-                                    </button>
+                                    <div className="space-y-4 sm:space-y-6">
+                                        <h3 className="text-lg sm:text-xl font-black uppercase italic text-white tracking-tight">System Status</h3>
+                                        <p className="text-xs sm:text-sm text-slate-400 font-light leading-relaxed">Waiting for leader command. Ensure your profile is calibrated for optimal matching.</p>
+                                    </div>
                                 )}
                             </div>
-                        </div>
-                    )}
 
-                    {/* ── STATE: match_found — Flash ── */}
-                    {state === "match_found" && party && (
-                        <div className="bg-zinc-900/40 backdrop-blur-2xl border border-emerald-500/40 rounded-[2.5rem] p-12 flex flex-col items-center gap-6 text-center shadow-[0_0_50px_rgba(16,185,129,0.1)] animate-in zoom-in-95 duration-500 relative overflow-hidden">
-                            <div className="absolute inset-0 bg-gradient-to-b from-emerald-500/5 to-transparent pointer-events-none" />
-                            <div className="relative">
-                                <div className="absolute inset-0 bg-emerald-500 blur-2xl opacity-20 animate-pulse" />
-                                <div className="text-7xl relative">⚔️</div>
-                            </div>
-                            <div className="space-y-2">
-                                <h2 className="text-3xl font-black text-white tracking-tight uppercase italic">Rivals Located</h2>
-                                <p className="text-emerald-400/80 text-[10px] font-black tracking-[0.3em] uppercase">Prepare for engagement</p>
-                            </div>
-                            <div className="w-12 h-1.5 bg-zinc-900 rounded-full overflow-hidden border border-zinc-800">
-                                <div className="h-full bg-emerald-500 animate-[shimmer_1.5s_infinite]" />
-                            </div>
-                            <p className="text-zinc-500 text-xs font-medium">Synchronizing systems and entering arena…</p>
-                        </div>
-                    )}
+                            <aside className="w-full lg:w-80 space-y-4 sm:space-y-6">
+                                <div className="rounded-2xl sm:rounded-3xl border border-white/5 bg-white/[0.02] p-5 sm:p-8 space-y-4">
+                                    <p className="text-[8px] sm:text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Lobby Intel</p>
+                                    <div className="space-y-3 sm:space-y-4">
+                                        <div className="flex justify-between text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">
+                                            <span className="text-slate-600">Discipline</span>
+                                            <span className="text-cyan-400">{meta.label}</span>
+                                        </div>
+                                        <div className="flex justify-between text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">
+                                            <span className="text-slate-600">Format</span>
+                                            <span className="text-white">{formatLabel}</span>
+                                        </div>
+                                        <div className="flex justify-between text-[9px] sm:text-[10px] font-bold uppercase tracking-widest">
+                                            <span className="text-slate-600">Protocol</span>
+                                            <span className="text-white">{partyQueueModeLabel(queueMode)}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                {state !== "no_party" && !busy && (
+                                    <button 
+                                        onClick={() => confirmLeave ? handleLeave() : setConfirmLeave(true)} 
+                                        className={`w-full py-3.5 sm:py-4 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] rounded-xl transition-all ${
+                                            confirmLeave ? "bg-rose-500 text-white" : "border border-white/5 text-slate-600 hover:text-rose-400 hover:bg-rose-500/5"
+                                        }`}
+                                    >
+                                        {confirmLeave ? "Confirm Disband Lobby?" : "Disband Lobby"}
+                                    </button>
+                                )}
+                            </aside>
 
-                    {/* Tip */}
-                    {state === "no_party" && (
-                        <div className="flex items-center justify-center gap-2 text-[10px] font-bold text-zinc-600 tracking-widest uppercase">
-                            <span className="w-1 h-1 rounded-full bg-zinc-800" />
-                            Partner will receive instant notification
-                            <span className="w-1 h-1 rounded-full bg-zinc-800" />
                         </div>
-                    )}
+                    </section>
+
                 </div>
-            </div>
+            </main>
         </div>
     );
 }

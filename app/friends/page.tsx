@@ -9,7 +9,6 @@ import NavBar from "@/components/NavBar";
 interface Friend {
     friendship_id: string;
     id: string;
-    username: string;
     first_name: string;
     last_name: string;
     avatar_url: string | null;
@@ -22,7 +21,7 @@ export default function FriendsPage() {
     const [friends,   setFriends]   = useState<Friend[]>([]);
     const [requests,  setRequests]  = useState<Friend[]>([]);
     const [search,    setSearch]    = useState("");
-    const [results,   setResults]   = useState<{ id: string; username: string; first_name: string; last_name: string }[]>([]);
+    const [results,   setResults]   = useState<{ id: string; first_name: string; last_name: string }[]>([]);
     const [loading,   setLoading]   = useState(true);
     const [actionMsg, setActionMsg] = useState("");
 
@@ -123,7 +122,7 @@ export default function FriendsPage() {
                 <div className="flex flex-col gap-2">
                     <input
                         type="text"
-                        placeholder="Search players by username to add them…"
+                        placeholder="Search players by name to add them…"
                         value={search}
                         onChange={e => setSearch(e.target.value)}
                         className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-cyan-500/50"
@@ -133,8 +132,7 @@ export default function FriendsPage() {
                             {results.map(p => (
                                 <div key={p.id} className="flex items-center justify-between bg-zinc-900 border border-white/10 rounded-xl px-4 py-3">
                                     <div>
-                                        <span className="text-sm font-semibold">@{p.username}</span>
-                                        <span className="text-xs text-zinc-500 ml-2">{p.first_name} {p.last_name}</span>
+                                        <span className="text-sm font-semibold">{p.first_name} {p.last_name}</span>
                                     </div>
                                     <button
                                         onClick={() => sendRequest(p.id)}
@@ -166,11 +164,10 @@ export default function FriendsPage() {
                                 <div key={f.friendship_id} className="flex items-center justify-between bg-zinc-900 border border-white/10 rounded-xl px-4 py-3">
                                     <div className="flex items-center gap-3">
                                         <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-bold text-zinc-400 shrink-0">
-                                            {f.username[0].toUpperCase()}
+                                            {f.first_name?.[0]?.toUpperCase()}
                                         </div>
                                         <div>
-                                            <div className="text-sm font-semibold">@{f.username}</div>
-                                            <div className="text-xs text-zinc-500">{f.first_name} {f.last_name}</div>
+                                            <div className="text-sm font-semibold">{f.first_name} {f.last_name}</div>
                                         </div>
                                     </div>
                                     <button
@@ -198,11 +195,10 @@ export default function FriendsPage() {
                                 <div key={r.friendship_id} className="flex items-center justify-between bg-zinc-900 border border-cyan-500/20 rounded-xl px-4 py-3">
                                     <div className="flex items-center gap-3">
                                         <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-bold text-zinc-400 shrink-0">
-                                            {r.username[0].toUpperCase()}
+                                            {r.first_name?.[0]?.toUpperCase()}
                                         </div>
                                         <div>
-                                            <div className="text-sm font-semibold">@{r.username}</div>
-                                            <div className="text-xs text-zinc-500">{r.first_name} {r.last_name}</div>
+                                            <div className="text-sm font-semibold">{r.first_name} {r.last_name}</div>
                                         </div>
                                     </div>
                                     <div className="flex gap-2">

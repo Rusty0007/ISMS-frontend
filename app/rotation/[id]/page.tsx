@@ -33,7 +33,7 @@ export default function RotationDetailPage() {
     const [myId,        setMyId]        = useState<string>("");
     const [showAdd,     setShowAdd]     = useState(false);
     const [search,      setSearch]      = useState("");
-    const [results,     setResults]     = useState<{ id: string; username: string }[]>([]);
+    const [results,     setResults]     = useState<{ id: string; first_name: string | null; last_name: string | null }[]>([]);
     const [guestName,   setGuestName]   = useState("");
     const [adding,      setAdding]      = useState(false);
     const [showAdvance, setShowAdvance] = useState(false);
@@ -272,10 +272,10 @@ export default function RotationDetailPage() {
                 {/* Add Player panel */}
                 {showAdd && !isEnded && (
                     <div className="bg-zinc-900 border border-white/10 rounded-xl p-4 flex flex-col gap-3">
-                        <p className="text-xs font-bold text-zinc-400">Add by username search</p>
+                        <p className="text-xs font-bold text-zinc-400">Add by name search</p>
                         <input
                             type="text"
-                            placeholder="Search username..."
+                            placeholder="Search name..."
                             value={search}
                             onChange={e => setSearch(e.target.value)}
                             className="w-full bg-zinc-800 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-cyan-500/50"
@@ -285,11 +285,11 @@ export default function RotationDetailPage() {
                                 {results.map(p => (
                                     <button
                                         key={p.id}
-                                        onClick={() => addPlayerById(p.id, p.username)}
+                                        onClick={() => addPlayerById(p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.id.slice(0, 8))}
                                         disabled={adding}
                                         className="flex items-center justify-between bg-zinc-800 rounded-xl px-3 py-2 hover:bg-zinc-700 transition-colors"
                                     >
-                                        <span className="text-sm font-semibold">@{p.username}</span>
+                                        <span className="text-sm font-semibold">{p.first_name} {p.last_name}</span>
                                         <span className="text-xs text-cyan-400">+ Add</span>
                                     </button>
                                 ))}

@@ -5,7 +5,6 @@ import { getAccessToken } from "@/lib/auth";
 
 interface AdminUser {
     id: string;
-    username: string;
     email: string;
     first_name: string | null;
     last_name: string | null;
@@ -171,12 +170,12 @@ export default function UsersAdminPage() {
                                         <div className="w-10 h-10 rounded-full bg-zinc-800 border border-white/10 overflow-hidden shrink-0 group-hover:border-white/20 transition-colors">
                                             {u.avatar_url
                                                 ? <img src={u.avatar_url} alt="" className="w-full h-full object-cover" />
-                                                : <div className="w-full h-full flex items-center justify-center text-sm text-white/40 font-bold">{(u.username ?? "?")[0].toUpperCase()}</div>
+                                                : <div className="w-full h-full flex items-center justify-center text-sm text-white/40 font-bold">{(u.first_name?.[0] ?? "?").toUpperCase()}</div>
                                             }
                                         </div>
                                         <div>
-                                            <p className="font-semibold text-white">{u.username}</p>
-                                            <p className="text-xs text-white/30">{u.first_name} {u.last_name}</p>
+                                            <p className="font-semibold text-white">{`${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email}</p>
+                                            <p className="text-xs text-white/30">{u.email}</p>
                                         </div>
                                     </div>
                                 </td>
@@ -235,7 +234,7 @@ export default function UsersAdminPage() {
                         <div className="flex items-start justify-between">
                             <div>
                                 <h2 className="text-xl font-bold text-white">Manage Roles</h2>
-                                <p className="text-sm text-white/40 mt-1">{roleTarget.username} · <span className="text-white/20">{roleTarget.email}</span></p>
+                                <p className="text-sm text-white/40 mt-1">{`${roleTarget.first_name || ''} ${roleTarget.last_name || ''}`.trim() || roleTarget.email} · <span className="text-white/20">{roleTarget.email}</span></p>
                             </div>
                             <button onClick={() => setRoleTarget(null)} className="w-10 h-10 rounded-full flex items-center justify-center text-white/30 hover:text-white hover:bg-white/10 transition-all text-2xl leading-none">×</button>
                         </div>

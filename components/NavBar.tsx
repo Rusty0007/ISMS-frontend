@@ -15,6 +15,7 @@ interface Notification {
     body: string;
     type: string;
     reference_id: string | null;
+    data?: Record<string, string | null> | null;
     is_read: boolean;
     created_at: string;
 }
@@ -27,10 +28,104 @@ interface ToastItem {
 interface NavBarProps {
     backHref?: string;
     backLabel?: string;
+    title?: string;
     navLinks?: ReactNode;   // extra links rendered between logo and bell
+    hideLogo?: boolean;     // hide logo + username; shows back button on the left instead
 }
 
-export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
+function MobileNavIcon({
+    kind,
+    className = "w-5 h-5",
+}: {
+    kind: "hq" | "matches" | "clubs" | "tournaments" | "leaderboard" | "profile" | "play";
+    className?: string;
+}) {
+    if (kind === "hq") {
+        return (
+            <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 10.5 12 3.75l8.25 6.75V20.25H14.25V15h-4.5v5.25H3.75V10.5Z" />
+            </svg>
+        );
+    }
+    if (kind === "matches") {
+        return (
+            <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 5.25h9m-10.5 4.5h12m-10.5 4.5h9m-10.5 4.5h12" />
+            </svg>
+        );
+    }
+    if (kind === "clubs") {
+        return (
+            <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 20.25h15M6 20.25V8.25l6-3 6 3v12M9 10.5h.008v.008H9V10.5Zm0 3h.008v.008H9V13.5Zm0 3h.008v.008H9V16.5Zm6-6h.008v.008H15V10.5Zm0 3h.008v.008H15V13.5Zm0 3h.008v.008H15V16.5Z" />
+            </svg>
+        );
+    }
+    if (kind === "tournaments") {
+        return (
+            <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 18.75h-9m9 0a3 3 0 0 1 3 3h-15a3 3 0 0 1 3-3m9 0v-3.375c0-.621-.503-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.503-1.125 1.125-1.125h.872m5.007 0V9.457c0-.621-.503-1.125-1.125-1.125h-3.465c-.622 0-1.125.503-1.125 1.125v5.918m4.716 0h-4.716m5.007 0h1.071c.621 0 1.125.503 1.125 1.125v1.125m-7.203-2.25H6.429c-.621 0-1.125.503-1.125 1.125v1.125m9.234-9.457V4.462c0-.621-.503-1.125-1.125-1.125h-2.13c-.622 0-1.125.503-1.125 1.125v3.87m4.38 0h-4.38" />
+            </svg>
+        );
+    }
+    if (kind === "leaderboard") {
+        return (
+            <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75c0 .621-.504 1.125-1.125 1.125h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125v-11.25ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
+            </svg>
+        );
+    }
+    if (kind === "profile") {
+        return (
+            <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.9}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 7.5a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.5 20.118a7.5 7.5 0 0 1 15 0" />
+            </svg>
+        );
+    }
+    return (
+        <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5 8.25 12h4.5l-2.25 7.5 7.5-10.5h-4.5l2.25-4.5Z" />
+        </svg>
+    );
+}
+
+function isSameLocalDay(a: Date, b: Date) {
+    return a.getFullYear() === b.getFullYear()
+        && a.getMonth() === b.getMonth()
+        && a.getDate() === b.getDate();
+}
+
+function formatNotificationTimestamp(createdAt: string) {
+    const parsed = new Date(createdAt);
+    if (Number.isNaN(parsed.getTime())) return "";
+
+    const now = new Date();
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+
+    const timeLabel = new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+    }).format(parsed);
+
+    if (isSameLocalDay(parsed, now)) {
+        return `Today at ${timeLabel}`;
+    }
+
+    if (isSameLocalDay(parsed, yesterday)) {
+        return `Yesterday at ${timeLabel}`;
+    }
+
+    const dateLabel = new Intl.DateTimeFormat(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+    }).format(parsed);
+
+    return `${dateLabel} at ${timeLabel}`;
+}
+
+export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo }: NavBarProps) {
     const router = useRouter();
     const pathname = usePathname();
     const [notifications,  setNotifications]  = useState<Notification[]>([]);
@@ -40,11 +135,14 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
     const [respondingId,   setRespondingId]    = useState<string | null>(null);
     const [toasts,         setToasts]          = useState<ToastItem[]>([]);
 
-    const [username,       setUsername]       = useState<string | null>(null);
+    const [firstName,      setFirstName]      = useState<string | null>(null);
+    const [lastName,       setLastName]       = useState<string | null>(null);
     const [isAdmin,        setIsAdmin]        = useState(false);
     const [partyStatus,    setPartyStatus]    = useState<string | null>(null); // "forming"|"ready"|"in_queue"
 
     const dropdownRef       = useRef<HTMLDivElement>(null);
+    const profileRef        = useRef<HTMLDivElement>(null);
+    const [profileOpen,    setProfileOpen]     = useState(false);
     const mobileMenuRef     = useRef<HTMLDivElement>(null);
     const pollRef           = useRef<ReturnType<typeof setInterval> | null>(null);
     const toastedIdsRef     = useRef(new Set<string>());
@@ -54,6 +152,17 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
     function resolveMatchRoute(matchId: string, rawStatus: unknown): string {
         const status = typeof rawStatus === "string" ? rawStatus : "";
         return status === "awaiting_players" ? `/matches/${matchId}/lobby` : `/matches/${matchId}`;
+    }
+
+    function getNotificationClubId(notif: Notification): string | null {
+        const clubId = notif.data?.club_id;
+        return typeof clubId === "string" && clubId.length > 0 ? clubId : null;
+    }
+
+    function hasMatchApprovalActions(notif: Notification): boolean {
+        return notif.type === "match_pending_approval"
+            && !!notif.reference_id
+            && !!getNotificationClubId(notif);
     }
 
     function shouldAutoRedirectToMatch(rawStatus: unknown): boolean {
@@ -215,7 +324,29 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
 
     // Initial load + polling every 15s (reduced from 30s for faster alerts)
     useEffect(() => {
-        setUsername(sessionStorage.getItem("username"));
+        const storedFirst = sessionStorage.getItem("first_name");
+        const storedLast = sessionStorage.getItem("last_name");
+        
+        if (storedFirst && storedLast) {
+            setFirstName(storedFirst);
+            setLastName(storedLast);
+        } else {
+            // Fallback: Fetch from profile if missing from storage (e.g. migration or hard refresh)
+            const token = getAccessToken();
+            if (token) {
+                fetch("/api/players/me", { headers: { Authorization: `Bearer ${token}` } })
+                    .then(res => res.ok ? res.json() : null)
+                    .then(data => {
+                        if (data?.profile) {
+                            setFirstName(data.profile.first_name);
+                            setLastName(data.profile.last_name);
+                            sessionStorage.setItem("first_name", data.profile.first_name || "");
+                            sessionStorage.setItem("last_name", data.profile.last_name || "");
+                        }
+                    }).catch(() => {});
+            }
+        }
+
         const roles: string[] = JSON.parse(sessionStorage.getItem("roles") ?? "[]");
         setIsAdmin(roles.includes("system_admin"));
     }, []);
@@ -317,6 +448,7 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                 body,
                 type:         payload.data?.type         ?? "general",
                 reference_id: payload.data?.reference_id ?? null,
+                data:         payload.data ?? null,
                 is_read:      false,
                 created_at:   new Date().toISOString(),
             };
@@ -378,6 +510,9 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
             if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
                 setDropdownOpen(false);
             }
+            if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+                setProfileOpen(false);
+            }
             if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
                 setMobileMenuOpen(false);
             }
@@ -385,6 +520,17 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
         document.addEventListener("mousedown", handleClick);
         return () => document.removeEventListener("mousedown", handleClick);
     }, []);
+
+    useEffect(() => {
+        if (!dropdownOpen) return;
+        if (typeof window === "undefined" || window.innerWidth >= 640) return;
+
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [dropdownOpen]);
 
     async function handleOpenDropdown() {
         setDropdownOpen(prev => !prev);
@@ -417,6 +563,13 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
         router.push("/dashboard");
     }
 
+    function isActiveRoute(href: string) {
+        if (href === "/dashboard") return pathname === "/dashboard";
+        if (href === "/matches/queue") return pathname === "/matches/queue";
+        if (href === "/matches") return pathname === "/matches" || (pathname.startsWith("/matches/") && !pathname.startsWith("/matches/queue"));
+        return pathname === href || pathname.startsWith(`${href}/`);
+    }
+
     /** Icon emoji for a notification type. */
     function notifIcon(type: string): string {
         if (type.startsWith("tournament"))   return "🏆";
@@ -435,7 +588,11 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
     }
 
     /** Returns the destination path for a notification, or null if no navigation. */
-    function resolveNotifLink(type: string, referenceId: string | null): { href: string; label: string } | null {
+    function resolveNotifLink(
+        type: string,
+        referenceId: string | null,
+        data?: Record<string, string | null> | null,
+    ): { href: string; label: string } | null {
         switch (type) {
             // ── Tournament (organizer-facing → manage page) ─────────────
             case "tournament_registration":
@@ -452,11 +609,25 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                 return referenceId ? { href: `/tournaments/${referenceId}`, label: "View tournament →" } : null;
 
             // doubles_partner_invite has inline accept/decline — handled separately
+            case "tournament_match_called":
+                return referenceId ? { href: `/matches/${referenceId}/lobby`, label: "Join match lobby ->" } : null;
+            case "tournament_match_reminder":
+            case "tournament_match_update":
+            case "tournament_match_started":
+            case "tournament_match_ready":
+            case "tournament_match_verified":
+            case "tournament_match_disputed":
+                return referenceId ? { href: `/matches/${referenceId}`, label: "View match ->" } : null;
+
             case "doubles_partner_invite":
                 return null;
 
             // ── Match ────────────────────────────────────────────────────
             case "match_pending_approval":
+                if (typeof data?.club_id === "string" && data.club_id.length > 0) {
+                    return { href: `/clubs/${data.club_id}/admin`, label: "Review request ->" };
+                }
+                return referenceId ? { href: `/matches/${referenceId}`, label: "View match â†’" } : null;
             case "match_approved":
             case "match_rejected":
             case "match_result":
@@ -485,14 +656,15 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                 return referenceId ? { href: `/clubs/${referenceId}`, label: "View club →" } : null;
 
             // ── Open Play ──────────────────────────────────────────────────────
-            // open_play_session reference_id is session.id (no club_id) → go to clubs hub
+            // open_play session notifications reference_id is session.id
             case "open_play_session":
-                return { href: `/clubs`, label: "View open play →" };
-            // open_play_join/promoted/cancelled reference_id is club_id
             case "open_play_join":
             case "open_play_promoted":
             case "open_play_cancelled":
-                return referenceId ? { href: `/clubs/${referenceId}?tab=open-play`, label: "View session →" } : null;
+            case "open_play_live":
+            case "open_play_call":
+            case "open_play_skipped":
+                return referenceId ? { href: `/open-play/${referenceId}`, label: "View session →" } : { href: `/clubs`, label: "View open play →" };
 
             // ── Court Booking / Rental ─────────────────────────────────────────
             // court_rental reference_id is club_id
@@ -519,6 +691,70 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
 
             default:
                 return null;
+        }
+    }
+
+    async function handleMatchApprovalResponse(notif: Notification, decision: "approve" | "reject") {
+        const token = getAccessToken();
+        const matchId = notif.reference_id;
+        const clubId = getNotificationClubId(notif);
+        if (!token || !matchId || !clubId) return;
+
+        setRespondingId(notif.id);
+        try {
+            const res = await fetch(`/api/clubs/${clubId}/matches/${matchId}/${decision}`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                },
+                body: decision === "reject"
+                    ? JSON.stringify({ reason: "The club did not approve this match." })
+                    : undefined,
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                const msg = (err as { detail?: string }).detail ?? `Failed to ${decision} match.`;
+                setNotifications(prev => prev.map(n =>
+                    n.id === notif.id ? { ...n, body: `⚠️ ${msg}` } : n
+                ));
+                setToasts(prev => prev.map(t =>
+                    t.notif.id === notif.id ? { ...t, notif: { ...t.notif, body: `⚠️ ${msg}` } } : t
+                ));
+                return;
+            }
+
+            await fetch(`/api/notifications/${notif.id}/read`, {
+                method: "PUT",
+                headers: { Authorization: `Bearer ${token}` },
+            }).catch(() => {});
+
+            const approved = decision === "approve";
+            const nextType = approved ? "match_approved" : "match_rejected";
+            const nextTitle = approved ? "Match Approved" : "Match Rejected";
+            const nextBody = approved
+                ? "You approved this club match."
+                : "You rejected this club match.";
+
+            setNotifications(prev => prev.map(n =>
+                n.id === notif.id
+                    ? { ...n, type: nextType, title: nextTitle, body: nextBody, is_read: true }
+                    : n
+            ));
+            setToasts(prev => prev.map(t =>
+                t.notif.id === notif.id
+                    ? { ...t, notif: { ...t.notif, type: nextType, title: nextTitle, body: nextBody, is_read: true } }
+                    : t
+            ));
+            if (!notif.is_read) {
+                setUnreadCount(prev => Math.max(0, prev - 1));
+            }
+            void fetchNotifications();
+        } catch (err) {
+            console.error("[NavBar] handleMatchApprovalResponse error:", err);
+        } finally {
+            setRespondingId(null);
         }
     }
 
@@ -671,20 +907,36 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
 
     return (
         <>
-            <nav className="relative z-30 border-b border-white/[0.08] bg-zinc-950/40 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.05)] px-4 sm:px-6 py-4 flex items-center justify-between">
+            <nav className="sticky top-0 z-50 h-[64px] border-b border-white/5 bg-[#050b14]/80 backdrop-blur-xl px-[var(--mobile-padding)] sm:px-6 flex items-center justify-between shadow-lg shadow-black/20">
                 <div className="flex items-center gap-3 shrink-0">
-                    <button
-                        type="button"
-                        onClick={handleLogoClick}
-                        aria-label="Go to dashboard"
-                        className="transition-transform active:scale-95"
-                    >
-                        <Image src="/logo.png" alt="iSMS" width={120} height={40} priority className="h-10 w-auto" />
-                    </button>
-                    {username && (
-                        <span className="hidden sm:block text-xs text-zinc-400 border-l border-zinc-700 pl-3">
-                            {username}
-                        </span>
+                    {hideLogo && backHref ? (
+                        <Link
+                            href={backHref}
+                            className="flex items-center gap-2 px-3 py-2 rounded-xl border border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:text-white hover:border-zinc-700 hover:bg-zinc-800/60 transition-all text-sm font-bold"
+                        >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
+                            </svg>
+                            {backLabel ?? "Back"}
+                        </Link>
+                    ) : (
+                        <>
+                            {pathname !== "/dashboard" && (
+                                <button
+                                    type="button"
+                                    onClick={handleLogoClick}
+                                    aria-label="Go to dashboard"
+                                    className="transition-transform active:scale-95"
+                                >
+                                    <Image src="/logo.png" alt="iSMS" width={120} height={40} priority className={`w-auto ${title ? "h-8 sm:h-10" : "h-10"}`} />
+                                </button>
+                            )}
+                            {firstName && pathname !== "/dashboard" && (
+                                <span className="hidden sm:block text-xs text-zinc-400 border-l border-zinc-700 pl-3">
+                                    {firstName}
+                                </span>
+                            )}
+                        </>
                     )}
                     {isAdmin && (
                         <Link
@@ -704,8 +956,16 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                     )}
                 </div>
 
+                {title && (
+                    <div className="pointer-events-none absolute inset-x-0 flex justify-center px-24 sm:hidden">
+                        <span className="truncate text-sm font-semibold tracking-[0.01em] text-zinc-100">
+                            {title}
+                        </span>
+                    </div>
+                )}
+
                 {navLinks && (
-                    <div className="hidden md:flex items-center gap-4 flex-1 px-6">
+                    <div className="hidden md:flex items-center gap-1 flex-1 px-8">
                         {navLinks}
                     </div>
                 )}
@@ -740,7 +1000,7 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                     <div className="relative" ref={dropdownRef}>
                         <button
                             onClick={handleOpenDropdown}
-                            className="relative text-zinc-400 hover:text-white transition-colors p-1"
+                            className="relative rounded-xl border border-white/5 bg-white/[0.03] p-2 text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors"
                             aria-label="Notifications"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -754,19 +1014,42 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                         </button>
 
                         {dropdownOpen && (
-                            <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-2rem)] bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-50">
-                                <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between">
-                                    <span className="text-xs font-bold tracking-[0.2em] text-zinc-500 uppercase">Notifications</span>
-                                    <Link href="/referee" className="text-xs text-blue-400 hover:underline">My Referee Matches</Link>
-                                </div>
+                            <>
+                                <button
+                                    type="button"
+                                    aria-label="Close notifications"
+                                    onClick={() => setDropdownOpen(false)}
+                                    className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[1px] sm:hidden"
+                                />
+                                <div className="fixed inset-x-3 top-[76px] z-50 max-h-[min(72vh,560px)] overflow-hidden rounded-[24px] border border-white/10 bg-zinc-900 shadow-2xl sm:absolute sm:right-0 sm:left-auto sm:top-full sm:mt-2 sm:w-80 sm:max-w-[calc(100vw-2rem)] sm:max-h-none sm:rounded-2xl">
+                                    <div className="px-4 py-3.5 border-b border-white/5 flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <span className="text-xs font-bold tracking-[0.2em] text-zinc-500 uppercase">Notifications</span>
+                                            <p className="mt-1 text-[11px] text-zinc-500 sm:hidden">Updates, invites, and match alerts</p>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <Link href="/referee" className="text-xs text-blue-400 hover:underline whitespace-nowrap">My Referee Matches</Link>
+                                            <button
+                                                type="button"
+                                                onClick={() => setDropdownOpen(false)}
+                                                className="sm:hidden rounded-xl border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-[11px] font-bold text-zinc-300"
+                                            >
+                                                Close
+                                            </button>
+                                        </div>
+                                    </div>
 
-                                {notifications.length === 0 ? (
-                                    <div className="px-4 py-8 text-center text-zinc-600 text-sm">No notifications yet.</div>
-                                ) : (
-                                    <div className="max-h-96 overflow-y-auto">
-                                        {notifications.map(n => {
-                                            const dest = resolveNotifLink(n.type, n.reference_id);
-                                            const hasInlineActions = (n.type === "referee_invite" || n.type === "friend_request" || n.type === "doubles_partner_invite" || n.type === "party_invite") && !!n.reference_id;
+                                    {notifications.length === 0 ? (
+                                        <div className="px-4 py-8 text-center text-zinc-600 text-sm">No notifications yet.</div>
+                                    ) : (
+                                        <div className="max-h-[calc(72vh-72px)] overflow-y-auto overscroll-contain sm:max-h-96">
+                                            {notifications.map(n => {
+                                            const dest = resolveNotifLink(n.type, n.reference_id, n.data);
+                                            const hasInlineActions = (
+                                                (n.type === "referee_invite" || n.type === "friend_request" || n.type === "doubles_partner_invite" || n.type === "party_invite")
+                                                && !!n.reference_id
+                                            ) || hasMatchApprovalActions(n);
+                                            const receivedAt = formatNotificationTimestamp(n.created_at);
                                             const rowContent = (
                                                 <>
                                                     <div className="flex items-start gap-3">
@@ -779,6 +1062,9 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                                                                 )}
                                                             </div>
                                                             <p className="text-xs text-zinc-400 mt-0.5">{n.body}</p>
+                                                            {receivedAt && (
+                                                                <p className="text-[11px] text-zinc-500 mt-1">{receivedAt}</p>
+                                                            )}
                                                             {dest && !hasInlineActions && (
                                                                 <p className="text-[11px] text-blue-400/70 mt-1">{dest.label}</p>
                                                             )}
@@ -832,6 +1118,17 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                                                             </button>
                                                         </div>
                                                     )}
+
+                                                    {hasMatchApprovalActions(n) && (
+                                                        <div className="flex gap-2" onClick={e => e.stopPropagation()}>
+                                                            <button onClick={() => handleMatchApprovalResponse(n, "approve")} disabled={respondingId === n.id} className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold py-1.5 rounded-lg transition-colors disabled:opacity-50">
+                                                                {respondingId === n.id ? "â€¦" : "Approve"}
+                                                            </button>
+                                                            <button onClick={() => handleMatchApprovalResponse(n, "reject")} disabled={respondingId === n.id} className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 text-xs font-bold py-1.5 rounded-lg transition-colors disabled:opacity-50">
+                                                                Reject
+                                                            </button>
+                                                        </div>
+                                                    )}
                                                 </>
                                             );
                                             return dest && !hasInlineActions ? (
@@ -851,11 +1148,56 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                                         })}
                                     </div>
                                 )}
+                                </div>
+                            </>
+                        )}
+                    </div>
+
+                    {/* Desktop Profile Dropdown */}
+                    <div className="hidden md:block relative" ref={profileRef}>
+                        <button
+                            onClick={() => setProfileOpen(!profileOpen)}
+                            className="flex items-center gap-3 px-3 py-1.5 rounded-xl border border-white/5 bg-white/[0.03] hover:bg-white/[0.06] transition-colors"
+                        >
+                            <div className="flex flex-col items-end">
+                                <span className="text-xs font-bold text-white leading-none">
+                                    {firstName} {lastName}
+                                </span>
+                            </div>
+                            <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-xs font-black">
+                                {firstName?.[0].toUpperCase()}
+                            </div>
+                        </button>
+
+                        {profileOpen && (
+                            <div className="absolute right-0 top-full mt-2 w-48 rounded-2xl border border-white/10 bg-zinc-900 shadow-2xl overflow-hidden py-2">
+                                <Link href="/profile" onClick={() => setProfileOpen(false)} className="flex items-center gap-3 px-4 py-2 text-xs font-bold text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
+                                    <span className="text-sm">👤</span>
+                                    Profile
+                                </Link>
+                                <Link href="/matches" onClick={() => setProfileOpen(false)} className="flex items-center gap-3 px-4 py-2 text-xs font-bold text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
+                                    <span className="text-sm">🎾</span>
+                                    Match History
+                                </Link>
+                                <div className="h-px bg-white/5 my-1" />
+                                <button
+                                    onClick={() => {
+                                        setProfileOpen(false);
+                                        import("@/lib/auth").then(({ clearAuthSession }) => {
+                                            clearAuthSession();
+                                            window.location.href = "/login";
+                                        });
+                                    }}
+                                    className="w-full flex items-center gap-3 px-4 py-2 text-xs font-bold text-red-400 hover:bg-red-500/10 transition-colors"
+                                >
+                                    <span className="text-sm">🚪</span>
+                                    Logout
+                                </button>
                             </div>
                         )}
                     </div>
 
-                    {backHref && backLabel && (
+                    {backHref && backLabel && !hideLogo && (
                         <Link href={backHref} className="hidden sm:block text-sm text-zinc-400 hover:text-white transition-colors">
                             {backLabel}
                         </Link>
@@ -865,7 +1207,7 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                     <div className="md:hidden relative" ref={mobileMenuRef}>
                         <button
                             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                            className="p-1 text-zinc-400 hover:text-white transition-colors"
+                            className="rounded-xl border border-white/5 bg-white/[0.03] p-2 text-zinc-400 hover:text-white hover:bg-white/[0.06] transition-colors"
                         >
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke="currentColor" className="w-6 h-6">
                                 <path strokeLinecap="round" strokeLinejoin="round" d={mobileMenuOpen ? "M6 18L18 6M6 6l12 12" : "M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"} />
@@ -875,38 +1217,38 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                         {mobileMenuOpen && (
                             <div className="absolute right-0 top-full mt-2 w-64 bg-zinc-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden z-50">
                                 <div className="flex flex-col p-2">
-                                    <Link href="/dashboard" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/dashboard" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/dashboard" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/dashboard") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">🏠</span>
                                         <span className="text-sm font-bold">Dashboard</span>
                                     </Link>
-                                    <Link href="/matches" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/matches" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/matches" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/matches") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">🎾</span>
                                         <span className="text-sm font-bold">Matches</span>
                                     </Link>
-                                    <Link href="/clubs" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/clubs" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/clubs" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/clubs") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">🏢</span>
                                         <span className="text-sm font-bold">Clubs</span>
                                     </Link>
-                                    <Link href="/tournaments" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/tournaments" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/tournaments" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/tournaments") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">🏆</span>
                                         <span className="text-sm font-bold">Tournaments</span>
                                     </Link>
-                                    <Link href="/leaderboard" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/leaderboard" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/leaderboard" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/leaderboard") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">📊</span>
                                         <span className="text-sm font-bold">Leaderboard</span>
                                     </Link>
-                                    <Link href="/friends" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/friends" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/friends" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/friends") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">👥</span>
                                         <span className="text-sm font-bold">Friends</span>
                                     </Link>
-                                    <Link href="/referee" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/referee" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/referee" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/referee") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">🟡</span>
                                         <span className="text-sm font-bold">Referee</span>
                                     </Link>
                                     <div className="h-px bg-white/5 my-2" />
-                                    <Link href="/profile" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${pathname === "/profile" ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                    <Link href="/profile" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/profile") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">👤</span>
-                                        <span className="text-sm font-bold">My Profile</span>
+                                        <span className="text-sm font-bold">Profile</span>
                                     </Link>
                                     <button 
                                         onClick={() => {
@@ -949,36 +1291,51 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
             <QueueBanner />
 
             {/* ── Bottom Navigation Bar (Mobile Only) ── */}
-            <div className="md:hidden fixed bottom-0 left-0 right-0 z-[100] bg-zinc-950/80 backdrop-blur-xl border-t border-white/10 px-6 py-3 pb-safe">
-                <div className="flex items-center justify-between max-w-lg mx-auto">
-                    <Link href="/dashboard" className={`flex flex-col items-center gap-1 ${pathname === "/dashboard" ? "text-blue-400" : "text-zinc-500"}`}>
-                        <span className="text-xl">🏠</span>
-                        <span className="text-[10px] font-black uppercase tracking-widest">Home</span>
-                    </Link>
-                    <Link href="/matches" className={`flex flex-col items-center gap-1 ${pathname === "/matches" ? "text-blue-400" : "text-zinc-500"}`}>
-                        <span className="text-xl">🎾</span>
-                        <span className="text-[10px] font-black uppercase tracking-widest">Play</span>
-                    </Link>
-                    <Link href="/clubs" className={`flex flex-col items-center gap-1 ${pathname === "/clubs" ? "text-blue-400" : "text-zinc-500"}`}>
-                        <span className="text-xl">🏢</span>
-                        <span className="text-[10px] font-black uppercase tracking-widest">Clubs</span>
-                    </Link>
-                    <Link href="/tournaments" className={`flex flex-col items-center gap-1 ${pathname === "/tournaments" ? "text-blue-400" : "text-zinc-500"}`}>
-                        <span className="text-xl">🏆</span>
-                        <span className="text-[10px] font-black uppercase tracking-widest">Events</span>
-                    </Link>
-                    <Link href="/profile" className={`flex flex-col items-center gap-1 ${pathname === "/profile" ? "text-blue-400" : "text-zinc-500"}`}>
-                        <span className="text-xl">👤</span>
-                        <span className="text-[10px] font-black uppercase tracking-widest">Me</span>
-                    </Link>
+            <div className="md:hidden fixed inset-x-0 bottom-0 z-[100] px-4 pb-[calc(env(safe-area-inset-bottom,0px)+12px)]">
+                <div className="mx-auto max-w-md rounded-[28px] border border-white/10 bg-[#050b14]/95 px-3 py-2.5 shadow-[0_24px_50px_rgba(0,0,0,0.6)] backdrop-blur-2xl">
+                    <div className="grid grid-cols-[1fr_1fr_auto_1fr_1fr] items-end gap-1">
+                        <Link href="/dashboard" className={`flex flex-col items-center gap-1.5 px-1 py-1 ${isActiveRoute("/dashboard") ? "text-cyan-400" : "text-slate-500"}`}>
+                            <MobileNavIcon kind="hq" className="w-5 h-5" />
+                            <span className="text-center text-[8px] font-black uppercase tracking-widest leading-none">HQ</span>
+                        </Link>
+                        <Link href="/matches" className={`flex flex-col items-center gap-1.5 px-1 py-1 ${isActiveRoute("/matches") ? "text-cyan-400" : "text-slate-500"}`}>
+                            <MobileNavIcon kind="matches" className="w-5 h-5" />
+                            <span className="text-center text-[8px] font-black uppercase tracking-widest leading-none">Matches</span>
+                        </Link>
+
+                        {/* Floating Center "PLAY" Button */}
+                        <div className="flex flex-col items-center gap-1 px-1">
+                            <Link href="/matches/queue" className={`-mt-10 flex h-16 w-16 flex-col items-center justify-center gap-1 rounded-[1.5rem] border shadow-[0_12px_30px_rgba(6,182,212,0.3)] transition-all active:scale-90 ${
+                                isActiveRoute("/matches/queue")
+                                    ? "border-cyan-400/50 bg-gradient-to-br from-cyan-500 to-blue-600"
+                                    : "border-white/10 bg-zinc-900"
+                            }`}>
+                                <MobileNavIcon kind="play" className={`w-7 h-7 ${isActiveRoute("/matches/queue") ? "text-white" : "text-cyan-500"}`} />
+                                <span className={`text-center text-[8px] font-black uppercase tracking-widest leading-none ${isActiveRoute("/matches/queue") ? "text-white" : "text-cyan-500"}`}>Play</span>
+                            </Link>
+                        </div>
+
+                        <Link href="/friends" className={`flex flex-col items-center gap-1.5 px-1 py-1 ${isActiveRoute("/friends") ? "text-cyan-400" : "text-slate-500"}`}>
+                            <MobileNavIcon kind="leaderboard" className="w-5 h-5" />
+                            <span className="text-center text-[8px] font-black uppercase tracking-widest leading-none">Social</span>
+                        </Link>
+                        <Link href="/profile" className={`flex flex-col items-center gap-1.5 px-1 py-1 ${isActiveRoute("/profile") ? "text-cyan-400" : "text-slate-500"}`}>
+                            <MobileNavIcon kind="profile" className="w-5 h-5" />
+                            <span className="text-center text-[8px] font-black uppercase tracking-widest leading-none">User</span>
+                        </Link>
+                    </div>
                 </div>
             </div>
 
             {/* ── Toast notifications ── */}
             <div className="fixed top-4 left-4 right-4 sm:left-auto sm:right-4 sm:w-80 z-[200] flex flex-col gap-2 pointer-events-none">
                 {toasts.map(t => {
-                    const dest = resolveNotifLink(t.notif.type, t.notif.reference_id);
-                    const hasInlineActions = (t.notif.type === "referee_invite" || t.notif.type === "friend_request" || t.notif.type === "party_invite") && !!t.notif.reference_id;
+                    const dest = resolveNotifLink(t.notif.type, t.notif.reference_id, t.notif.data);
+                    const hasInlineActions = (
+                        (t.notif.type === "referee_invite" || t.notif.type === "friend_request" || t.notif.type === "party_invite")
+                        && !!t.notif.reference_id
+                    ) || hasMatchApprovalActions(t.notif);
+                    const receivedAt = formatNotificationTimestamp(t.notif.created_at);
                     const dotColor =
                         t.notif.type === "referee_invite" || t.notif.type === "referee_request" ? "bg-blue-400" :
                         t.notif.type === "friend_request"         ? "bg-violet-400" :
@@ -995,6 +1352,9 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                                     <div className="min-w-0">
                                         <p className="text-sm font-semibold text-white leading-tight">{t.notif.title}</p>
                                         <p className="text-xs text-zinc-400 mt-0.5 leading-snug">{t.notif.body}</p>
+                                        {receivedAt && (
+                                            <p className="text-[11px] text-zinc-500 mt-1">{receivedAt}</p>
+                                        )}
                                         {dest && !hasInlineActions && (
                                             <p className="text-[10px] text-zinc-600 mt-1">{dest.label}</p>
                                         )}
@@ -1043,6 +1403,17 @@ export default function NavBar({ backHref, backLabel, navLinks }: NavBarProps) {
                                     </button>
                                     <button onClick={() => { handlePartyInviteResponse(t.notif.reference_id!, "decline"); dismissToast(t.id); }} disabled={respondingId === t.notif.reference_id} className="flex-1 bg-zinc-700/50 hover:bg-zinc-700 text-zinc-300 text-xs font-bold py-2 rounded-xl transition-colors disabled:opacity-50 touch-manipulation">
                                         Decline
+                                    </button>
+                                </div>
+                            )}
+
+                            {hasMatchApprovalActions(t.notif) && (
+                                <div className="flex gap-2 mt-3">
+                                    <button onClick={() => { handleMatchApprovalResponse(t.notif, "approve"); dismissToast(t.id); }} disabled={respondingId === t.notif.id} className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-bold py-2 rounded-xl transition-colors disabled:opacity-50 touch-manipulation">
+                                        {respondingId === t.notif.id ? "â€¦" : "Approve"}
+                                    </button>
+                                    <button onClick={() => { handleMatchApprovalResponse(t.notif, "reject"); dismissToast(t.id); }} disabled={respondingId === t.notif.id} className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 text-xs font-bold py-2 rounded-xl transition-colors disabled:opacity-50 touch-manipulation">
+                                        Reject
                                     </button>
                                 </div>
                             )}

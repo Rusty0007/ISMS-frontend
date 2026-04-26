@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { clearAuthSession, getAccessToken, isUnauthorized } from "@/lib/auth";
+import { useTokenRefresh } from "@/lib/useTokenRefresh";
 import {
     dispatchOfflineQueuedAction,
     getOfflineQueueKey,
@@ -11,7 +12,7 @@ import {
 } from "@/lib/offline-match";
 import NavBar from "@/components/NavBar";
 
-// ── Scoring causes per sport ──────────────────────────────────────────────────
+// ── Scoring causes per sport ────────────────────────────────────────────────── 
 
 const SCORING_CAUSES: Record<string, string[]> = {
     badminton: [
@@ -40,6 +41,11 @@ interface MatchData {
     sport: string;
     match_format: string;
     status: string;
+    tournament_id?: string | null;
+    tournament_phase?: string | null;
+    called_at?: string | null;
+    checkin_deadline_at?: string | null;
+    started_at?: string | null;
     player1_id: string;
     player2_id: string | null;
     player3_id: string | null;
@@ -59,16 +65,17 @@ interface HistoryEntry {
     id: string;
     event_type: string;
     team: string | null;
+    player_id?: string | null;
     description: string;
     set_number: number | null;
     team1_score: number | null;
     team2_score: number | null;
+    meta?: Record<string, unknown> | null;
     created_at: string;
 }
 
 interface PlayerProfile {
     id: string;
-    username: string;
     first_name: string;
     last_name: string;
 }
@@ -96,6 +103,23 @@ type ModalState =
     | { type: "violation" };
 
 const RECONNECT_NOTICE_MS = 5000;
+const MATCH_PRESENCE_PING_MS = 20000;
+
+type FirstServeSelection = {
+    team: "team1" | "team2";
+    slot: 0 | 1;
+    side: "right" | "left";
+    isFirstServiceSequence: boolean;
+    confirmed: boolean;
+};
+
+type ServeEvent = {
+    type: "fault" | "sideout";
+    faulterName?: string;
+    newTeam: string;
+    newPlayerName: string;
+    isSideout: boolean;
+};
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
@@ -103,15 +127,20 @@ export default function RefereeConsolePage() {
     const router  = useRouter();
     const params  = useParams();
     const matchId = params.id as string;
+    const firstServeStorageKey = `isms.referee.first-serve.${matchId}`;
+
+    // Refresh JWT before it expires so an ongoing match never gets a 401
+    useTokenRefresh();
 
     const [match,    setMatch]    = useState<MatchData | null>(null);
     const [sets,     setSets]     = useState<SetData[]>([]);
     const [history,  setHistory]  = useState<HistoryEntry[]>([]);
     const [ruleset,  setRuleset]  = useState<Ruleset | null>(null);
+    const [matchMissing, setMatchMissing] = useState(false);
     const [profiles, setProfiles] = useState<Record<string, PlayerProfile>>({});
     const [userId,   setUserId]   = useState<string | null>(null);
     const [loading,  setLoading]  = useState(true);
-    const [error,    setError]    = useState("");
+    const [,         setError]    = useState("");
 
     // Current set being played
     const [activeSet, setActiveSet] = useState(1);
@@ -156,13 +185,7 @@ export default function RefereeConsolePage() {
     // Side-out only happens when BOTH players on a team have faulted
     const [servingTeam,  setServingTeam]  = useState<"team1" | "team2">("team1");
     const [servingSlot,  setServingSlot]  = useState<0 | 1>(0);
-    const [serveEvent,   setServeEvent]   = useState<{
-        type: "fault" | "sideout";
-        faulterName?: string;
-        newTeam: string;
-        newPlayerName: string;
-        isSideout: boolean; // false = partner serves same team, true = opponent team takes serve
-    } | null>(null);
+    const [,            setServeEvent] = useState<ServeEvent | null>(null);
 
     const wsRef        = useRef<WebSocket | null>(null);
     const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -178,6 +201,9 @@ export default function RefereeConsolePage() {
     const [syncing,      setSyncing]      = useState(false);
     // "online" | "offline" | "syncing" | "synced"
     const [connPhase, setConnPhase] = useState<"online" | "offline" | "syncing" | "synced">("online");
+    // Set to true when consecutive sync attempts keep failing — shows a persistent retry banner
+    const [,            setSyncFailed] = useState(false);
+    const syncRetryCount = useRef(0);
     const [leaveLoading, setLeaveLoading] = useState(false);
     const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
 
@@ -353,10 +379,15 @@ export default function RefereeConsolePage() {
         syncingRef.current = false;
         setSyncing(false);
         if (remaining.length === 0) {
+            syncRetryCount.current = 0;
+            setSyncFailed(false);
             setConnPhase("synced");
             scheduleConnPhaseReset();
             fetchAll(token);
         } else {
+            syncRetryCount.current += 1;
+            // After 3 failed attempts show a persistent "Sync failed" banner
+            if (syncRetryCount.current >= 3) setSyncFailed(true);
             clearConnPhaseTimer();
             setConnPhase("online");
         }
@@ -366,6 +397,27 @@ export default function RefereeConsolePage() {
         const t = getAccessToken();
         if (!t) router.replace("/login");
         return t;
+    }
+
+    function persistOpeningServeSelection(team: "team1" | "team2") {
+        const nextSelection: FirstServeSelection = {
+            team,
+            slot: 0,
+            side: "right",
+            isFirstServiceSequence: true,
+            confirmed: true,
+        };
+
+        setServingTeam(team);
+        setServingSlot(0);
+        setServingSide("right");
+        setIsFirstServiceSequence(true);
+        setFirstServeConfirmed(true);
+        setShowFirstServe(false);
+
+        try {
+            sessionStorage.setItem(firstServeStorageKey, JSON.stringify(nextSelection));
+        } catch {}
     }
 
     // ── Data fetching ──────────────────────────────────────────────────────────
@@ -379,19 +431,22 @@ export default function RefereeConsolePage() {
             ]);
 
             if (isUnauthorized(matchRes.status)) { clearAuthSession(); router.replace("/login"); return; }
+            if (matchRes.status === 404) {
+                setMatchMissing(true);
+                setMatch(null);
+                setSets([]);
+                setHistory([]);
+                setRuleset(null);
+                setProfiles({});
+                return;
+            }
 
             if (matchRes.ok) {
+                setMatchMissing(false);
                 const d = await matchRes.json();
                 setMatch(d.match);
                 setSets(d.sets ?? []);
                 if (d.sets?.length) setActiveSet(d.sets[d.sets.length - 1].set_number);
-
-                // Show first-serve picker only if the match hasn't started yet (all scores 0)
-                const allZero = (d.sets ?? []).every((s: SetData) =>
-                    (s.team1_score ?? s.player1_score ?? 0) === 0 &&
-                    (s.team2_score ?? s.player2_score ?? 0) === 0
-                );
-                if (allZero) setShowFirstServe(true);
 
                 // Fetch player profiles
                 const ids = [d.match.player1_id, d.match.player2_id, d.match.player3_id, d.match.player4_id]
@@ -439,10 +494,64 @@ export default function RefereeConsolePage() {
         fetchAll(token).finally(() => setLoading(false));
     }, [fetchAll, router]);
 
+    useEffect(() => {
+        if (!matchMissing) return;
+        const timer = setTimeout(() => router.replace("/referee"), 1500);
+        return () => clearTimeout(timer);
+    }, [matchMissing, router]);
+
+    useEffect(() => {
+        if (!match) return;
+
+        const allZeroScores = sets.length === 0 || sets.every((set) =>
+            (set.team1_score ?? set.player1_score ?? 0) === 0 &&
+            (set.team2_score ?? set.player2_score ?? 0) === 0
+        );
+        const canConfigureOpeningServe =
+            match.sport === "pickleball"
+            && ["pending", "pending_approval", "awaiting_players", "assembling", "ongoing"].includes(match.status)
+            && allZeroScores;
+
+        if (!canConfigureOpeningServe) {
+            setShowFirstServe(false);
+            setFirstServeConfirmed(false);
+            try { sessionStorage.removeItem(firstServeStorageKey); } catch {}
+            return;
+        }
+
+        let savedSelection: FirstServeSelection | null = null;
+        try {
+            const raw = sessionStorage.getItem(firstServeStorageKey);
+            if (raw) {
+                const parsed = JSON.parse(raw) as Partial<FirstServeSelection>;
+                if ((parsed.team === "team1" || parsed.team === "team2") && parsed.confirmed) {
+                    savedSelection = {
+                        team: parsed.team,
+                        slot: parsed.slot === 1 ? 1 : 0,
+                        side: parsed.side === "left" ? "left" : "right",
+                        isFirstServiceSequence: parsed.isFirstServiceSequence !== false,
+                        confirmed: true,
+                    };
+                }
+            }
+        } catch {}
+
+        if (savedSelection) {
+            setServingTeam(savedSelection.team);
+            setServingSlot(savedSelection.slot);
+            setServingSide(savedSelection.side);
+            setIsFirstServiceSequence(savedSelection.isFirstServiceSequence);
+        }
+
+        const hasSavedOpeningServe = Boolean(savedSelection?.confirmed);
+        setFirstServeConfirmed(hasSavedOpeningServe);
+        setShowFirstServe(match.status === "ongoing" && !hasSavedOpeningServe);
+    }, [firstServeStorageKey, match, sets]);
+
     // ── WebSocket ──────────────────────────────────────────────────────────────
 
     useEffect(() => {
-        if (!matchId) return;
+        if (!matchId || matchMissing) return;
         let alive = true;
 
         function connect() {
@@ -466,7 +575,7 @@ export default function RefereeConsolePage() {
                         if (nextSetNumber !== null) {
                             setActiveSet(nextSetNumber);
                         }
-                        // Show set won modal
+                        // Show set won modal + reset serve to loser
                         if (d.set_winner) {
                             const wonSet = d.set_number_won as number;
                             const finishedSet = updatedSets.find(s => s.set_number === wonSet);
@@ -477,6 +586,10 @@ export default function RefereeConsolePage() {
                                 p2Score: finishedSet?.player2_score ?? 0,
                             });
                             setTimeout(() => setSetWonInfo(null), 4000);
+                            // Auto-assign serve to loser for the next set
+                            if (nextSetNumber !== null) {
+                                resetServeForNewSet(d.set_winner as "team1" | "team2");
+                            }
                         }
                         // Auto-fill winner if match is decided
                         if (d.match_winner_team) {
@@ -487,6 +600,23 @@ export default function RefereeConsolePage() {
                         if (token) fetch(`/api/matches/${matchId}/history`, { headers: { Authorization: `Bearer ${token}` } })
                             .then(r => r.ok ? r.json() : null)
                             .then(data => { if (data) setHistory(data.history ?? []); });
+                    }
+                    if (
+                        d.type === "tournament_match_called"
+                        || d.type === "tournament_match_updated"
+                        || d.type === "tournament_match_ready"
+                        || d.type === "tournament_result_verified"
+                        || d.type === "tournament_result_disputed"
+                    ) {
+                        const token = getAccessToken();
+                        if (token) void fetchAll(token);
+                    }
+                    if (d.type === "match_started") {
+                        setMatch(prev => prev ? {
+                            ...prev,
+                            status: "ongoing",
+                            tournament_phase: typeof d.tournament_phase === "string" ? d.tournament_phase as string : prev.tournament_phase,
+                        } : prev);
                     }
                     if (d.type === "match_completed") {
                         setMatch(prev => prev ? { ...prev, status: "completed" } : prev);
@@ -509,7 +639,7 @@ export default function RefereeConsolePage() {
             if (reconnectRef.current) clearTimeout(reconnectRef.current);
             wsRef.current?.close();
         };
-    }, [matchId]);
+    }, [matchId, fetchAll, matchMissing]);
 
     useEffect(() => {
         offlineSetHandledRef.current.clear();
@@ -573,10 +703,57 @@ export default function RefereeConsolePage() {
                 { set_number: nextSetNumber, player1_score: 0, player2_score: 0, team1_score: 0, team2_score: 0 },
             ]);
             setActiveSet(nextSetNumber);
+            // Reset serve to loser's right-side player for the new set
+            resetServeForNewSet(setWinner);
         }
     }, [activeSet, finalizeMatchOffline, getSetScores, getSetWinner, getSetsWon, isOnline, match, ruleset, sets]);
 
     useEffect(() => { if (match?.status) statusRef.current = match.status; }, [match?.status]);
+
+    useEffect(() => {
+        if (!matchId || match?.status !== "ongoing" || !isOnline) return;
+
+        let alive = true;
+
+        const pingPresence = async () => {
+            const token = getAccessToken();
+            if (!token) return;
+            try {
+                const res = await fetch(`/api/matches/${matchId}/presence/ping`, {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${token}` },
+                });
+                if (isUnauthorized(res.status)) {
+                    clearAuthSession();
+                    router.replace("/login");
+                    return;
+                }
+                if (!res.ok) return;
+                const data = await res.json() as { match_status?: string };
+                if (!alive) return;
+                if (data.match_status === "invalidated") {
+                    setMatch(prev => prev ? { ...prev, status: "invalidated" } : prev);
+                }
+            } catch (err) {
+                console.warn("[referee] presence ping failed:", err);
+            }
+        };
+
+        pingPresence();
+        const intervalId = setInterval(pingPresence, MATCH_PRESENCE_PING_MS);
+        const handleVisibility = () => {
+            if (document.visibilityState === "visible") {
+                pingPresence();
+            }
+        };
+        document.addEventListener("visibilitychange", handleVisibility);
+
+        return () => {
+            alive = false;
+            clearInterval(intervalId);
+            document.removeEventListener("visibilitychange", handleVisibility);
+        };
+    }, [isOnline, match?.status, matchId, router]);
 
     // ── Online / offline resilience ────────────────────────────────────────────
 
@@ -665,7 +842,7 @@ export default function RefereeConsolePage() {
     function getPlayerName(id: string | null | undefined): string {
         if (!id) return "—";
         const p = profiles[id];
-        return p ? `@${p.username}` : "Player";
+        return p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() || "Player" : "Player";
     }
 
     function getTeamPlayerIds(team: "team1" | "team2"): string[] {
@@ -676,9 +853,23 @@ export default function RefereeConsolePage() {
         ).filter(Boolean) as string[];
     }
 
-    function showServeEvent(evt: typeof serveEvent) {
+    function showServeEvent(evt: ServeEvent) {
         setServeEvent(evt);
         setTimeout(() => setServeEvent(null), 5000);
+    }
+
+    /**
+     * Reset serve state when a new set begins.
+     * Loser of the finished set serves first, starting with their right-side
+     * player (slot 0). isFirstServiceSequence is reset to true so the new set
+     * uses the start-of-game single-server exception (doubles sports).
+     */
+    function resetServeForNewSet(setWinner: "team1" | "team2") {
+        const loser = setWinner === "team1" ? "team2" : "team1";
+        setServingTeam(loser);
+        setServingSlot(0);
+        setServingSide("right");
+        setIsFirstServiceSequence(true);
     }
 
     /**
@@ -730,6 +921,10 @@ export default function RefereeConsolePage() {
         attribution_type: "winning_shot" | "opponent_error" | "other",
         opts: { player_id?: string; cause?: string; actor_player_id?: string; reason_code?: string; overrideQid?: string } = {}
     ) {
+        if (match?.status !== "ongoing") {
+            setError("Start the match before recording points.");
+            return;
+        }
         const token = getToken(); if (!token) return;
         setError("");
         setModal({ type: "none" });
@@ -839,6 +1034,17 @@ export default function RefereeConsolePage() {
         }
     }
 
+    function openLostServeModal() {
+        const teamIds = getTeamPlayerIds(servingTeam);
+        // Singles: only one server — auto-set so the modal skips the picker
+        if (teamIds.length === 1) {
+            setLostServeFaulter(teamIds[0]);
+        } else {
+            setLostServeFaulter("");
+        }
+        setModal({ type: "lost_serve" });
+    }
+
     function handleLostServe() {
         const teamIds   = getTeamPlayerIds(servingTeam);
         const isDoubles = teamIds.length > 1;
@@ -883,18 +1089,22 @@ export default function RefereeConsolePage() {
     }
 
     async function submitViolation() {
+        if (match?.status !== "ongoing") {
+            setError("Start the match before recording violations.");
+            return;
+        }
         const token = getToken(); if (!token) return;
         if (!violPlayer || !violCode) { setError("Select player and violation type."); return; }
         setError("");
         const qid = crypto.randomUUID();
-        const payload = { player_id: violPlayer, violation_code: violCode, set_number: activeSet, award_point_to: violAward || null, client_action_id: qid };
+        const resolvedAward = violAward || inferredViolationAward(violPlayer);
+        const payload = { player_id: violPlayer, violation_code: violCode, set_number: activeSet, award_point_to: resolvedAward || null, client_action_id: qid };
         setModal({ type: "none" });
 
-        // Pickleball: any violation by the current server triggers the two-server rotation
+        // Pickleball: serving-team violations are rally losses, not points.
         if (match?.sport === "pickleball") {
-            const servingIds      = getTeamPlayerIds(servingTeam);
-            const currentServerId = servingIds[servingSlot] ?? servingIds[0];
-            if (violPlayer === currentServerId) {
+            const violatorTeam = playerTeam(violPlayer);
+            if (violatorTeam === servingTeam) {
                 handleServiceFault(servingTeam, violPlayer);
             }
         }
@@ -905,7 +1115,7 @@ export default function RefereeConsolePage() {
             const action: QueuedAction = { qid, type: "violation", payload };
             const q = [...offlineQueue, action];
             setOfflineQueue(q); saveQueue(q);
-            if (violAward) applyPointLocally(violAward, activeSet);
+            if (resolvedAward) applyPointLocally(resolvedAward, activeSet);
             return;
         }
 
@@ -920,12 +1130,16 @@ export default function RefereeConsolePage() {
             const action: QueuedAction = { qid, type: "violation", payload };
             const q = [...offlineQueue, action];
             setOfflineQueue(q); saveQueue(q);
-            if (violAward) applyPointLocally(violAward, activeSet);
+            if (resolvedAward) applyPointLocally(resolvedAward, activeSet);
             setIsOnline(false); setConnPhase("offline");
         }
     }
 
     async function submitUndo() {
+        if (match?.status !== "ongoing") {
+            setError("Start the match before undoing actions.");
+            return;
+        }
         const token = getToken(); if (!token) return;
         setError("");
 
@@ -957,6 +1171,10 @@ export default function RefereeConsolePage() {
 
     async function submitEnd() {
         if (!endWinner) return;
+        if (match?.status !== "ongoing") {
+            setError("Start the match before ending it.");
+            return;
+        }
         const token = getToken(); if (!token) return;
         setEnding(true);
         const winnerId = endWinner === "team1" ? match!.player1_id : match!.player2_id!;
@@ -990,7 +1208,7 @@ export default function RefereeConsolePage() {
                 router.push(`/matches/${matchId}`);
             } else {
                 const d = await res.json();
-                setError(d.detail || "Failed to leave match.");
+                setError(d.detail || "Failed to invalidate match.");
             }
         } catch { setError("Connection error."); }
         finally { setLeaveLoading(false); setShowLeaveConfirm(false); }
@@ -1014,7 +1232,9 @@ export default function RefereeConsolePage() {
 
     if (!match) return (
         <div className="min-h-[100svh] bg-zinc-950 text-white flex items-center justify-center">
-            <div className="text-zinc-500 text-sm">Match not found.</div>
+            <div className="text-zinc-500 text-sm">
+                {matchMissing ? "Match not found. Returning to referee hub..." : "Match not found."}
+            </div>
         </div>
     );
 
@@ -1090,726 +1310,615 @@ export default function RefereeConsolePage() {
     function pName(id: string | null) {
         if (!id) return "—";
         const p = profiles[id];
-        return p ? `@${p.username}` : id.slice(0, 8) + "…";
+        return p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() || id.slice(0, 8) : id.slice(0, 8) + "…";
+    }
+
+    function humanizeHistoryLabel(value: unknown): string | null {
+        if (typeof value !== "string") return null;
+        const cleaned = value.replace(/_/g, " ").trim();
+        if (!cleaned) return null;
+        return cleaned.replace(/\w\S*/g, (part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase());
+    }
+
+    function formatHistoryDescription(entry: HistoryEntry): string {
+        const meta = entry.meta ?? {};
+        const team = entry.team === "team1" ? "Team 1" : entry.team === "team2" ? "Team 2" : "Match";
+        const scorerName = entry.player_id ? getPlayerName(entry.player_id) : null;
+        const actorPlayerId = typeof meta["actor_player_id"] === "string" ? meta["actor_player_id"] : null;
+        const actorName = actorPlayerId ? getPlayerName(actorPlayerId) : null;
+        const causeLabel = humanizeHistoryLabel(meta["cause"]);
+        const reasonLabel = humanizeHistoryLabel(meta["reason_code"]);
+        const faultPlayerId = typeof meta["fault_player_id"] === "string"
+            ? meta["fault_player_id"]
+            : entry.player_id ?? null;
+        const faultPlayerName = faultPlayerId ? getPlayerName(faultPlayerId) : null;
+        const serveEvent = typeof meta["event_type"] === "string" ? meta["event_type"] : null;
+        const newServingTeam = meta["new_serving_team"] === "team1"
+            ? "Team 1"
+            : meta["new_serving_team"] === "team2"
+                ? "Team 2"
+                : null;
+
+        if (entry.event_type === "point") {
+            if (meta["attribution_type"] === "winning_shot" && causeLabel) {
+                return `Point -> ${team} - ${causeLabel}${scorerName ? ` by ${scorerName}` : ""}`;
+            }
+            if (meta["attribution_type"] === "opponent_error" && reasonLabel) {
+                return `Point -> ${team} - ${reasonLabel}${actorName ? ` - error by ${actorName}` : ""} (opponent error)`;
+            }
+            if (causeLabel) {
+                return `Point -> ${team} - ${causeLabel}${scorerName ? ` by ${scorerName}` : ""}`;
+            }
+        }
+
+        if (entry.event_type === "serve_change") {
+            if (serveEvent === "loss_of_serve") {
+                return `Loss of serve - ${team}${faultPlayerName ? ` - ${faultPlayerName}` : ""} - Server 2 serves next`;
+            }
+            if (serveEvent === "side_out") {
+                return `Side out - ${team}${faultPlayerName ? ` - ${faultPlayerName}` : ""}${newServingTeam ? ` - ${newServingTeam} now serving` : ""}`;
+            }
+        }
+
+        return entry.description;
+    }
+
+    function otherTeam(team: "team1" | "team2"): "team1" | "team2" {
+        return team === "team1" ? "team2" : "team1";
+    }
+
+    function teamLabel(team: "team1" | "team2") {
+        return team === "team1" ? "Team 1" : "Team 2";
+    }
+
+    function playerTeam(playerId: string): "team1" | "team2" | null {
+        return players.find(p => p.id === playerId)?.team ?? null;
+    }
+
+    function availableErrorTypes() {
+        return (ruleset?.error_types ?? []).filter(e => match?.sport !== "pickleball" || e.code !== "SERVICE_FAULT");
+    }
+
+    function selectedErrorLabel() {
+        return availableErrorTypes().find(e => e.code === errorType)?.label ?? errorType;
+    }
+
+    function selectedViolationLabel() {
+        return ruleset?.violation_types.find(v => v.code === violCode)?.label ?? violCode;
+    }
+
+    function inferredViolationAward(playerId: string): "team1" | "team2" | "" {
+        const team = playerTeam(playerId);
+        if (!team) return "";
+        if (match?.sport === "pickleball" && team === servingTeam) return "";
+        return otherTeam(team);
     }
 
     const recentHistory = history.slice(-8).reverse();
+    const matchIsLive = match.status === "ongoing";
+    const allScoresZero = sets.length === 0 || sets.every((set) =>
+        (set.team1_score ?? set.player1_score ?? 0) === 0 &&
+        (set.team2_score ?? set.player2_score ?? 0) === 0
+    );
+    const canConfigureOpeningServe =
+        match.sport === "pickleball"
+        && ["pending", "pending_approval", "awaiting_players", "assembling", "ongoing"].includes(match.status)
+        && allScoresZero;
+    const showPreMatchOpeningServeCard = canConfigureOpeningServe && !matchIsLive;
+    const showLiveOpeningServeCard = showFirstServe && canConfigureOpeningServe && matchIsLive && !firstServeConfirmed;
+    const openingServerName = (() => {
+        const serverIds = getTeamPlayerIds(servingTeam);
+        return getPlayerName(serverIds[servingSlot] ?? serverIds[0]);
+    })();
+    const canStartTournamentMatch = Boolean(match.tournament_id)
+        && !["ongoing", "completed", "cancelled", "invalidated"].includes(match.status);
+    const lockedMessage = canStartTournamentMatch
+        ? "Tournament match is ready to start"
+        : match.status === "pending_approval"
+            ? "Scoring is locked while court approval is pending"
+            : match.status === "awaiting_players"
+                ? "Scoring is locked until everyone enters the lobby"
+                : "Scoring is locked until the match goes live";
+    const phaseLabel = match.tournament_phase ? match.tournament_phase.replace(/_/g, " ") : null;
 
     // ── Render ─────────────────────────────────────────────────────────────────
 
     return (
-        <div className="min-h-[100svh] overflow-x-hidden bg-zinc-950 text-white">
-            <NavBar backHref={`/matches/${matchId}`} backLabel="← Match" />
+        <div className="min-h-[100svh] overflow-x-hidden bg-[#050b14] text-white selection:bg-cyan-500/30 font-sans">
+            {/* Background Tactical Elements */}
+            <div className="fixed inset-0 pointer-events-none overflow-hidden">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(6,182,212,0.05)_0%,transparent_50%)]" />
+                <div 
+                    className="absolute inset-0 opacity-[0.03]"
+                    style={{
+                        backgroundImage: `linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)`,
+                        backgroundSize: "40px 40px",
+                    }}
+                />
+                <div className="absolute inset-0 animate-scanline pointer-events-none opacity-[0.01] bg-[linear-gradient(transparent,rgba(255,255,255,0.5),transparent)] h-20" />
+            </div>
+
+            <NavBar backHref={`/matches/${matchId}`} backLabel="← Exit Console" />
 
             <main
-                className="w-full max-w-lg mx-auto px-3 py-4 sm:px-4 sm:py-6 flex flex-col gap-3 sm:gap-4"
-                style={{
-                    paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))",
-                    paddingLeft: "max(0.75rem, env(safe-area-inset-left))",
-                    paddingRight: "max(0.75rem, env(safe-area-inset-right))",
-                }}
+                className="relative z-10 w-full max-w-lg mx-auto px-4 py-6 flex flex-col gap-4 sm:gap-6 pt-20 sm:pt-24"
+                style={{ paddingBottom: "max(2rem, env(safe-area-inset-bottom))" }}
             >
-
-                {/* Leave match confirmation modal */}
-                {showLeaveConfirm && (
-                    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center px-6">
-                        <div className="bg-zinc-900 border border-red-500/30 rounded-2xl p-6 max-w-sm w-full flex flex-col gap-4">
-                            <h3 className="font-black text-lg text-red-400">Invalidate Match?</h3>
-                            <p className="text-zinc-400 text-sm">
-                                Leaving will <span className="text-white font-semibold">invalidate this match</span>.
-                                All players will be notified and no ratings will be recorded.
-                            </p>
-                            <div className="flex gap-3">
-                                <button
-                                    onClick={() => setShowLeaveConfirm(false)}
-                                    className="flex-1 py-2.5 rounded-xl border border-white/10 text-zinc-400 text-sm font-semibold hover:bg-white/5 transition-colors"
-                                >
-                                    Stay
-                                </button>
-                                <button
-                                    onClick={handleLeaveMatch}
-                                    disabled={leaveLoading}
-                                    className="flex-1 py-2.5 rounded-xl bg-red-500 hover:bg-red-400 text-white text-sm font-black transition-colors disabled:opacity-50"
-                                >
-                                    {leaveLoading ? "Invalidating..." : "Invalidate Match"}
-                                </button>
-                            </div>
+                {/* Status HUD */}
+                <div className="flex items-center justify-between gap-4 px-2">
+                    <div className="space-y-1">
+                        <p className="text-[10px] font-black tracking-[0.4em] text-slate-500 uppercase">Overseer Console</p>
+                        <h1 className="text-xl sm:text-2xl font-black uppercase italic tracking-tight text-white flex items-center gap-2">
+                            {match.sport.replace("_", " ")}
+                            <span className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse" />
+                        </h1>
+                    </div>
+                    <div className="flex flex-col items-end gap-1.5">
+                        <button
+                            onClick={() => { setError(""); setShowLeaveConfirm(true); }}
+                            className="text-[9px] font-black border border-rose-500/30 text-rose-500 px-3 py-1.5 rounded-xl hover:bg-rose-500/10 transition-all uppercase tracking-widest italic"
+                        >
+                            Invalidate
+                        </button>
+                        <div className={`text-[9px] font-black border px-3 py-1 rounded-xl uppercase tracking-widest ${
+                            !isOnline ? "bg-amber-500/10 text-amber-500 border-amber-500/30" : 
+                            syncing ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 animate-pulse" : 
+                            "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                        }`}>
+                            {!isOnline ? "Signal Lost" : syncing ? "Syncing..." : "Live Sync"}
                         </div>
-                    </div>
-                )}
-
-                {/* First serve picker */}
-                {showFirstServe && !firstServeConfirmed && (
-                    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center px-6">
-                        <div className="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-sm w-full flex flex-col gap-5">
-                            <div className="text-center">
-                                <div className="text-3xl mb-2">🏓</div>
-                                <h2 className="font-black text-xl text-white">Who Serves First?</h2>
-                                <p className="text-zinc-400 text-sm mt-1">Call the toss and select the serving team</p>
-                            </div>
-
-                            <div className="flex flex-col gap-3">
-                                <button
-                                    onClick={() => {
-                                        setServingTeam("team1");
-                                        setServingSlot(0);
-                                        setServingSide("right");
-                                        setIsFirstServiceSequence(true);
-                                        setFirstServeConfirmed(true);
-                                        setShowFirstServe(false);
-                                    }}
-                                    className="group w-full bg-cyan-500/10 border-2 border-cyan-500/30 hover:border-cyan-500/60 hover:bg-cyan-500/20 rounded-2xl p-4 flex items-center gap-4 transition-all active:scale-[0.98]"
-                                >
-                                    <div className="w-11 h-11 rounded-xl bg-cyan-500/20 flex items-center justify-center text-lg font-black text-cyan-300 shrink-0">
-                                        1
-                                    </div>
-                                    <div className="text-left">
-                                        <div className="font-black text-base text-cyan-300">Team 1 Serves</div>
-                                        <div className="text-xs text-zinc-500 mt-0.5">
-                                            {players.filter(p => p.team === "team1").map(p => pName(p.id)).join(" & ") || "Team 1"}
-                                        </div>
-                                    </div>
-                                </button>
-                                <button
-                                    onClick={() => {
-                                        setServingTeam("team2");
-                                        setServingSlot(0);
-                                        setServingSide("right");
-                                        setIsFirstServiceSequence(true);
-                                        setFirstServeConfirmed(true);
-                                        setShowFirstServe(false);
-                                    }}
-                                    className="group w-full bg-violet-500/10 border-2 border-violet-500/30 hover:border-violet-500/60 hover:bg-violet-500/20 rounded-2xl p-4 flex items-center gap-4 transition-all active:scale-[0.98]"
-                                >
-                                    <div className="w-11 h-11 rounded-xl bg-violet-500/20 flex items-center justify-center text-lg font-black text-violet-300 shrink-0">
-                                        2
-                                    </div>
-                                    <div className="text-left">
-                                        <div className="font-black text-base text-violet-300">Team 2 Serves</div>
-                                        <div className="text-xs text-zinc-500 mt-0.5">
-                                            {players.filter(p => p.team === "team2").map(p => pName(p.id)).join(" & ") || "Team 2"}
-                                        </div>
-                                    </div>
-                                </button>
-                            </div>
-
-                            <button
-                                onClick={() => { setShowFirstServe(false); setFirstServeConfirmed(true); }}
-                                className="text-xs text-zinc-600 hover:text-zinc-400 text-center transition-colors"
-                            >
-                                Skip (decide later)
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* Header */}
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="min-w-0">
-                        <div className="text-xs font-bold tracking-widest text-zinc-500 uppercase">Referee Console</div>
-                        <div className="text-base sm:text-lg font-black capitalize break-words">{match.sport.replace("_", " ")}</div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                    <button
-                        onClick={() => setShowLeaveConfirm(true)}
-                        className="text-xs border border-red-500/30 text-red-400 px-3 py-1.5 rounded-full hover:bg-red-500/10 transition-colors font-semibold"
-                    >
-                        Invalidate
-                    </button>
-                    <span className={`text-xs border px-2.5 py-1.5 rounded-full font-semibold ${
-                        !isOnline
-                            ? "bg-orange-500/10 text-orange-400 border-orange-500/30"
-                            : syncing
-                                ? "bg-blue-500/10 text-blue-400 border-blue-500/30"
-                                : "bg-green-500/10 text-green-400 border-green-500/30"
-                    }`}>
-                        {!isOnline ? "Offline" : syncing ? "Syncing…" : "Live"}
-                    </span>
                     </div>
                 </div>
 
-                {/* Offline / sync banner */}
-                {(!isOnline || offlineQueue.length > 0) && (
-                    <div className={`rounded-xl px-4 py-2.5 text-sm font-semibold flex flex-wrap items-center justify-between gap-2 ${
-                        !isOnline
-                            ? "bg-orange-500/10 border border-orange-500/40 text-orange-300"
-                            : "bg-blue-500/10 border border-blue-500/40 text-blue-300"
-                    }`}>
-                        <span>
-                            {!isOnline
-                                ? `No connection — ${offlineQueue.length} action${offlineQueue.length !== 1 ? "s" : ""} queued locally`
-                                : syncing
-                                    ? `Syncing ${offlineQueue.length} action${offlineQueue.length !== 1 ? "s" : ""} to server…`
-                                    : `${offlineQueue.length} action${offlineQueue.length !== 1 ? "s" : ""} pending sync`
-                            }
-                        </span>
-                        {isOnline && !syncing && offlineQueue.length > 0 && (
-                            <button
-                                onClick={() => { const t = getAccessToken(); if (t) syncQueue(offlineQueue, t); }}
-                                className="text-xs underline opacity-80 hover:opacity-100"
-                            >Sync now</button>
+                {!matchIsLive && (
+                    <section className="rounded-[2rem] border border-amber-500/20 bg-amber-500/10 px-5 py-4 shadow-xl">
+                        <p className="text-sm font-black text-amber-300">{lockedMessage}</p>
+                        <p className="mt-1 text-xs text-zinc-400">
+                            Status: <span className="text-zinc-200">{match.status}</span>
+                            {phaseLabel ? <> · Phase: <span className="text-zinc-200 capitalize">{phaseLabel}</span></> : null}
+                            {match.checkin_deadline_at ? <> · Check-in: <span className="text-zinc-200">{new Date(match.checkin_deadline_at).toLocaleString()}</span></> : null}
+                        </p>
+
+                        {showPreMatchOpeningServeCard && (
+                            <div className="mt-4 rounded-[1.5rem] border border-cyan-500/20 bg-cyan-500/5 p-4">
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.3em] text-cyan-300">Opening Serve</p>
+                                        <p className="mt-1 text-xs text-zinc-400">
+                                            Call the toss now so the referee console is ready when the match unlocks.
+                                            {match.status === "pending_approval" ? " Scoring will open after the club approves the court." : ""}
+                                        </p>
+                                    </div>
+                                    {firstServeConfirmed && (
+                                        <span className="inline-flex items-center rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest text-emerald-300">
+                                            Saved
+                                        </span>
+                                    )}
+                                </div>
+
+                                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                    <button
+                                        onClick={() => persistOpeningServeSelection("team1")}
+                                        className={`rounded-[1.25rem] border px-4 py-3 text-left transition-colors ${
+                                            firstServeConfirmed && servingTeam === "team1"
+                                                ? "border-cyan-500/50 bg-cyan-500/15"
+                                                : "border-cyan-500/20 bg-zinc-900/60 hover:border-cyan-500/35 hover:bg-cyan-500/10"
+                                        }`}
+                                    >
+                                        <div className="text-sm font-black text-cyan-300">Team 1 serves first</div>
+                                        <div className="mt-1 text-xs text-zinc-500">
+                                            {players.filter(player => player.team === "team1").map(player => pName(player.id)).join(" & ") || "Team 1"}
+                                        </div>
+                                    </button>
+
+                                    <button
+                                        onClick={() => persistOpeningServeSelection("team2")}
+                                        className={`rounded-[1.25rem] border px-4 py-3 text-left transition-colors ${
+                                            firstServeConfirmed && servingTeam === "team2"
+                                                ? "border-violet-500/50 bg-violet-500/15"
+                                                : "border-violet-500/20 bg-zinc-900/60 hover:border-violet-500/35 hover:bg-violet-500/10"
+                                        }`}
+                                    >
+                                        <div className="text-sm font-black text-violet-300">Team 2 serves first</div>
+                                        <div className="mt-1 text-xs text-zinc-500">
+                                            {players.filter(player => player.team === "team2").map(player => pName(player.id)).join(" & ") || "Team 2"}
+                                        </div>
+                                    </button>
+                                </div>
+
+                                {firstServeConfirmed && (
+                                    <p className="mt-3 text-xs text-zinc-400">
+                                        Opening server: <span className="font-semibold text-zinc-200">{openingServerName}</span>
+                                        <span className="text-zinc-500"> · starts on the right side</span>
+                                    </p>
+                                )}
+                            </div>
                         )}
-                    </div>
+                    </section>
                 )}
 
-                {/* Scoreboard */}
-                <div className="bg-zinc-900 border border-white/10 rounded-2xl p-4 sm:p-5">
-                    {/* Sets won */}
-                    <div className="flex justify-between items-center mb-4">
-                        <div className="text-center flex-1 min-w-0">
-                            <div className="text-xs text-zinc-500 mb-1">Team 1</div>
-                            <div className="text-xs text-zinc-600 truncate px-1">
-                                {isDoubles ? `${pName(match.player1_id)} & ${pName(match.player3_id)}` : pName(match.player1_id)}
+                {showLiveOpeningServeCard && (
+                    <section className="rounded-[2rem] border border-cyan-500/20 bg-cyan-500/5 p-4 shadow-xl">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-cyan-300">Opening Serve</p>
+                                <p className="mt-1 text-xs text-zinc-400">
+                                    Confirm who serves first before recording the opening rally.
+                                </p>
                             </div>
                         </div>
-                        <div className="text-xs text-zinc-600 px-3 shrink-0">Sets</div>
-                        <div className="text-center flex-1 min-w-0">
-                            <div className="text-xs text-zinc-500 mb-1">Team 2</div>
-                            <div className="text-xs text-zinc-600 truncate px-1">
-                                {isDoubles ? `${pName(match.player2_id)} & ${pName(match.player4_id)}` : pName(match.player2_id)}
-                            </div>
-                        </div>
-                    </div>
 
-                    <div className="flex items-center justify-center gap-4 sm:gap-6">
-                        <div className="text-[clamp(2.5rem,17vw,3.75rem)] font-black tabular-nums">{t1SetsWon}</div>
-                        <div className="text-2xl text-zinc-600 font-bold">—</div>
-                        <div className="text-[clamp(2.5rem,17vw,3.75rem)] font-black tabular-nums">{t2SetsWon}</div>
-                    </div>
-
-                    {/* Current set score */}
-                    <div className="mt-4 pt-4 border-t border-white/5">
-                        <div className="flex items-center justify-center gap-2 mb-4">
-                            <div className="text-xs text-zinc-500">Set {activeSet}</div>
-                            {ruleset && (
-                                <div className="text-xs text-zinc-600 bg-zinc-800 px-2 py-0.5 rounded-full">
-                                    {ptsToWin} to win
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                            <button
+                                onClick={() => persistOpeningServeSelection("team1")}
+                                className="rounded-[1.25rem] border border-cyan-500/20 bg-zinc-900/60 px-4 py-3 text-left transition-colors hover:border-cyan-500/35 hover:bg-cyan-500/10"
+                            >
+                                <div className="text-sm font-black text-cyan-300">Team 1 serves first</div>
+                                <div className="mt-1 text-xs text-zinc-500">
+                                    {players.filter(player => player.team === "team1").map(player => pName(player.id)).join(" & ") || "Team 1"}
                                 </div>
-                            )}
+                            </button>
+
+                            <button
+                                onClick={() => persistOpeningServeSelection("team2")}
+                                className="rounded-[1.25rem] border border-violet-500/20 bg-zinc-900/60 px-4 py-3 text-left transition-colors hover:border-violet-500/35 hover:bg-violet-500/10"
+                            >
+                                <div className="text-sm font-black text-violet-300">Team 2 serves first</div>
+                                <div className="mt-1 text-xs text-zinc-500">
+                                    {players.filter(player => player.team === "team2").map(player => pName(player.id)).join(" & ") || "Team 2"}
+                                </div>
+                            </button>
+                        </div>
+                    </section>
+                )}
+
+                {/* Scoreboard Card */}
+                <section className="relative overflow-hidden bg-[#0a111a]/80 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl">
+                    <div className="absolute top-0 left-0 w-1 h-16 bg-cyan-500/40 rounded-full translate-y-8 opacity-40" />
+                    
+                    {/* Teams Display */}
+                    <div className="flex justify-between items-start mb-6 border-b border-white/5 pb-6">
+                        <div className="space-y-1 flex-1">
+                            <p className="text-[9px] font-black tracking-[0.2em] text-slate-500 uppercase">Squad Alpha</p>
+                            <p className="text-[11px] font-bold text-white truncate max-w-[120px] uppercase italic">
+                                {isDoubles ? "Team 1" : pName(match.player1_id)}
+                            </p>
+                            <div className="text-3xl sm:text-4xl font-black italic text-white">{t1SetsWon}</div>
+                        </div>
+                        <div className="px-4 py-2 bg-white/5 rounded-2xl flex flex-col items-center justify-center shrink-0">
+                            <span className="text-[8px] font-black text-slate-600 uppercase tracking-widest">Sets</span>
+                            <span className="text-xs font-black text-slate-400 italic">VS</span>
+                        </div>
+                        <div className="space-y-1 flex-1 text-right">
+                            <p className="text-[9px] font-black tracking-[0.2em] text-slate-500 uppercase text-right">Squad Bravo</p>
+                            <p className="text-[11px] font-bold text-white truncate max-w-[120px] uppercase italic text-right">
+                                {isDoubles ? "Team 2" : pName(match.player2_id)}
+                            </p>
+                            <div className="text-3xl sm:text-4xl font-black italic text-white text-right">{t2SetsWon}</div>
+                        </div>
+                    </div>
+
+                    {/* Active Set Focus */}
+                    <div className="space-y-6">
+                        <div className="flex flex-col items-center justify-center gap-1.5">
+                            <div className="px-4 py-1.5 rounded-full bg-cyan-500/10 border border-cyan-500/20 text-[10px] font-black text-cyan-400 uppercase tracking-[0.3em] italic">
+                                Set {activeSet} Target: {ptsToWin}
+                            </div>
                         </div>
 
-                        {/* ── Set-complete warning ── */}
                         {isCurrentSetOver && (
-                            <div className="mb-4 bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-3 flex items-center gap-3">
-                                <span className="text-amber-400 text-lg shrink-0">⛔</span>
-                                <div>
-                                    <p className="text-amber-400 text-xs font-black">Set {activeSet} is complete — no more points can be scored</p>
-                                    <p className="text-zinc-500 text-[11px] mt-0.5">
-                                        {currentSetWinner === "team1" ? "Team 1" : "Team 2"} wins this set &nbsp;·&nbsp; {t1Score}–{t2Score}
-                                        {sets.length > activeSet && ` · Switch to Set ${activeSet + 1} to continue`}
+                            <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl px-5 py-3 flex items-center gap-4 animate-in slide-in-from-top-2">
+                                <span className="text-xl">⛔</span>
+                                <div className="space-y-0.5">
+                                    <p className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Cycle Complete</p>
+                                    <p className="text-[10px] text-zinc-500 font-medium uppercase italic">
+                                        {currentSetWinner === "team1" ? "Alpha" : "Bravo"} Defeated Opponent · {t1Score}:{t2Score}
                                     </p>
                                 </div>
                             </div>
                         )}
 
-                        <div className="flex items-center justify-center gap-4 sm:gap-8">
-                            {/* Team 1 Quick Actions */}
-                            <div className="min-w-0 flex-1 flex flex-col items-center gap-3">
-                                <div className={`text-[clamp(2.2rem,16vw,3rem)] font-black tabular-nums ${servingTeam === "team1" ? "text-cyan-400" : "text-zinc-400"}`}>{t1Score}</div>
-                                <div className="flex flex-wrap justify-center gap-1.5">
-                                    {/* Pickleball: only serving team can score — hide Winner for non-serving team */}
-                                    {(!isDoubles || match.sport !== "pickleball" || servingTeam === "team1") && (
-                                        <button
-                                            disabled={isCurrentSetOver}
-                                            onClick={() => {
-                                                const pIds = getTeamPlayerIds("team1");
-                                                const pId = pIds.length === 1 ? pIds[0] : undefined;
-                                                if (pId) submitPoint("team1", "winning_shot", { player_id: pId, cause: "Winner" });
-                                                else setModal({ type: "point_attribution", team: "team1", step: "winning_shot" });
-                                            }}
-                                            className="px-2.5 py-1 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded-lg text-[10px] font-black text-cyan-400 uppercase tracking-tight transition-all active:scale-90 disabled:opacity-30 disabled:pointer-events-none"
-                                        >
-                                            Winner
-                                        </button>
-                                    )}
-                                    {/* Pickleball: Team 1 error → receiving team wins rally (serve rotation, no point) */}
-                                    {isDoubles && match.sport === "pickleball" && servingTeam === "team1" ? null : (
-                                        <button
-                                            disabled={isCurrentSetOver}
-                                            onClick={() => {
-                                                if (isDoubles && match.sport === "pickleball") {
-                                                    // Team 1 (serving) committed error → serve rotation, no point
-                                                    setLostServeFaulter(""); setModal({ type: "lost_serve" });
-                                                } else {
-                                                    const beneficiary = "team2";
-                                                    const fIds = getTeamPlayerIds("team1");
-                                                    const fId = fIds.length === 1 ? fIds[0] : undefined;
-                                                    if (fId) submitPoint(beneficiary, "opponent_error", { actor_player_id: fId, reason_code: "UNFORCED_ERROR" });
-                                                    else setModal({ type: "point_attribution", team: beneficiary, step: "opponent_error" });
-                                                }
-                                            }}
-                                            className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-lg text-[10px] font-black text-red-400 uppercase tracking-tight transition-all active:scale-90 disabled:opacity-30 disabled:pointer-events-none"
-                                        >
-                                            Error
-                                        </button>
-                                    )}
+                        <div className="flex items-center justify-center gap-4 sm:gap-10">
+                            <div className="flex-1 flex flex-col items-center gap-3">
+                                <div className={`text-6xl sm:text-7xl font-black tabular-nums italic transition-all ${servingTeam === "team1" ? "text-cyan-400 drop-shadow-[0_0_15px_rgba(6,182,212,0.3)]" : "text-slate-800"}`}>
+                                    {t1Score}
                                 </div>
-                            </div>
-
-                            <div className="text-xl text-zinc-700 font-bold self-start mt-2 shrink-0">:</div>
-
-                            {/* Team 2 Quick Actions */}
-                            <div className="min-w-0 flex-1 flex flex-col items-center gap-3">
-                                <div className={`text-[clamp(2.2rem,16vw,3rem)] font-black tabular-nums ${servingTeam === "team2" ? "text-violet-400" : "text-zinc-400"}`}>{t2Score}</div>
-                                <div className="flex flex-wrap justify-center gap-1.5">
-                                    {(!isDoubles || match.sport !== "pickleball" || servingTeam === "team2") && (
-                                        <button
-                                            disabled={isCurrentSetOver}
-                                            onClick={() => {
-                                                const pIds = getTeamPlayerIds("team2");
-                                                const pId = pIds.length === 1 ? pIds[0] : undefined;
-                                                if (pId) submitPoint("team2", "winning_shot", { player_id: pId, cause: "Winner" });
-                                                else setModal({ type: "point_attribution", team: "team2", step: "winning_shot" });
-                                            }}
-                                            className="px-2.5 py-1 bg-violet-500/10 hover:bg-violet-500/20 border border-violet-500/30 rounded-lg text-[10px] font-black text-violet-400 uppercase tracking-tight transition-all active:scale-90 disabled:opacity-30 disabled:pointer-events-none"
-                                        >
-                                            Winner
-                                        </button>
-                                    )}
-                                    {isDoubles && match.sport === "pickleball" && servingTeam === "team2" ? null : (
-                                        <button
-                                            disabled={isCurrentSetOver}
-                                            onClick={() => {
-                                                if (isDoubles && match.sport === "pickleball") {
-                                                    setLostServeFaulter(""); setModal({ type: "lost_serve" });
-                                                } else {
-                                                    const beneficiary = "team1";
-                                                    const fIds = getTeamPlayerIds("team2");
-                                                    const fId = fIds.length === 1 ? fIds[0] : undefined;
-                                                    if (fId) submitPoint(beneficiary, "opponent_error", { actor_player_id: fId, reason_code: "UNFORCED_ERROR" });
-                                                    else setModal({ type: "point_attribution", team: beneficiary, step: "opponent_error" });
-                                                }
-                                            }}
-                                            className="px-2.5 py-1 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-lg text-[10px] font-black text-red-400 uppercase tracking-tight transition-all active:scale-90 disabled:opacity-30 disabled:pointer-events-none"
-                                        >
-                                            Error
-                                        </button>
-                                    )}
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Set selector */}
-                    {sets.length > 1 && (
-                        <div className="mt-3 flex flex-wrap gap-2 justify-center">
-                            {sets.map(s => (
-                                <button
-                                    key={s.set_number}
-                                    onClick={() => setActiveSet(s.set_number)}
-                                    className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
-                                        s.set_number === activeSet
-                                            ? "border-cyan-500 text-cyan-400"
-                                            : "border-white/10 text-zinc-600 hover:border-white/20"
-                                    }`}
-                                >
-                                    S{s.set_number}
-                                </button>
-                            ))}
-                        </div>
-                    )}
-
-                    {/* ── Serve indicator (pickleball only) ── */}
-                    {match?.sport === "pickleball" && (
-                        <div className="mt-4 pt-3 border-t border-white/5">
-                            {/* Score call: T1 – T2 – ServerNumber */}
-                            <div className="text-center mb-2">
-                                <span className="text-[11px] font-black tracking-widest text-zinc-500 uppercase">
-                                    {t1Score} – {t2Score} – {servingSlot + 1}
-                                </span>
-                                {isFirstServiceSequence && (
-                                    <span className="ml-2 text-[10px] text-amber-400 font-semibold">(opening)</span>
+                                {servingTeam === "team1" && matchIsLive && (
+                                    <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-cyan-600">
+                                        <span className="w-1 h-1 rounded-full bg-cyan-500 animate-pulse" />
+                                        Serving
+                                    </div>
                                 )}
                             </div>
 
-                            <div className="flex items-center justify-between gap-2">
-                                {/* Team 1 serve indicator */}
-                                <div className={`flex-1 flex flex-col items-center gap-1 py-2 px-3 rounded-xl border transition-all ${
-                                    servingTeam === "team1"
-                                        ? "bg-cyan-500/10 border-cyan-500/40"
-                                        : "bg-transparent border-transparent opacity-30"
-                                }`}>
-                                    <div className="flex items-center gap-1.5">
-                                        {servingTeam === "team1" && (
-                                            <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shrink-0" />
-                                        )}
-                                        <span className={`text-xs font-bold ${servingTeam === "team1" ? "text-cyan-300" : "text-zinc-500"}`}>
-                                            Team 1
-                                        </span>
-                                    </div>
-                                    <span className={`text-[11px] truncate max-w-full ${servingTeam === "team1" ? "text-cyan-400" : "text-zinc-600"}`}>
-                                        {(() => {
-                                            const ids = getTeamPlayerIds("team1");
-                                            const pid = servingTeam === "team1" ? (ids[servingSlot] ?? ids[0]) : ids[0];
-                                            return pid ? getPlayerName(pid) : "—";
-                                        })()}
-                                    </span>
-                                    {servingTeam === "team1" && (
-                                        <span className="text-[10px] text-cyan-600 font-semibold">
-                                            Server {servingSlot + 1} · {servingSide === "right" ? "Right ▶" : "◀ Left"}
-                                        </span>
-                                    )}
-                                </div>
+                            <div className="text-2xl font-black text-slate-800 italic shrink-0">/</div>
 
-                                <span className="text-zinc-700 text-lg font-black shrink-0">🏓</span>
-
-                                {/* Team 2 serve indicator */}
-                                <div className={`flex-1 flex flex-col items-center gap-1 py-2 px-3 rounded-xl border transition-all ${
-                                    servingTeam === "team2"
-                                        ? "bg-violet-500/10 border-violet-500/40"
-                                        : "bg-transparent border-transparent opacity-30"
-                                }`}>
-                                    <div className="flex items-center gap-1.5">
-                                        {servingTeam === "team2" && (
-                                            <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse shrink-0" />
-                                        )}
-                                        <span className={`text-xs font-bold ${servingTeam === "team2" ? "text-violet-300" : "text-zinc-500"}`}>
-                                            Team 2
-                                        </span>
-                                    </div>
-                                    <span className={`text-[11px] truncate max-w-full ${servingTeam === "team2" ? "text-violet-400" : "text-zinc-600"}`}>
-                                        {(() => {
-                                            const ids = getTeamPlayerIds("team2");
-                                            const pid = servingTeam === "team2" ? (ids[servingSlot] ?? ids[0]) : ids[0];
-                                            return pid ? getPlayerName(pid) : "—";
-                                        })()}
-                                    </span>
-                                    {servingTeam === "team2" && (
-                                        <span className="text-[10px] text-violet-600 font-semibold">
-                                            Server {servingSlot + 1} · {servingSide === "right" ? "Right ▶" : "◀ Left"}
-                                        </span>
-                                    )}
+                            <div className="flex-1 flex flex-col items-center gap-3">
+                                <div className={`text-6xl sm:text-7xl font-black tabular-nums italic transition-all ${servingTeam === "team2" ? "text-violet-400 drop-shadow-[0_0_15px_rgba(167,139,250,0.3)]" : "text-slate-800"}`}>
+                                    {t2Score}
                                 </div>
+                                {servingTeam === "team2" && matchIsLive && (
+                                    <div className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-violet-600">
+                                        <span className="w-1 h-1 rounded-full bg-violet-500 animate-pulse" />
+                                        Serving
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Tactical Serve HUD (Pickleball Special) */}
+                    {match.sport === "pickleball" && (
+                        <div className="mt-8 pt-6 border-t border-white/5 flex flex-col gap-4">
+                            <div className="flex items-center justify-between px-2">
+                                <div className="space-y-1">
+                                    <p className="text-[8px] font-black text-slate-600 uppercase tracking-widest">Telemetry</p>
+                                    <p className="text-[10px] font-black text-cyan-500 uppercase italic">
+                                        {t1Score} : {t2Score} : {servingSlot + 1}
+                                    </p>
+                                </div>
+                                {isFirstServiceSequence && (
+                                    <div className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-[8px] font-black text-amber-500 uppercase tracking-widest animate-pulse">
+                                        Opening Ops
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                {[
+                                    { id: "team1", label: "Alpha", color: "cyan" },
+                                    { id: "team2", label: "Bravo", color: "violet" }
+                                ].map(team => {
+                                    const isActive = servingTeam === team.id;
+                                    const ids = getTeamPlayerIds(team.id as "team1" | "team2");
+                                    const pid = isActive ? (ids[servingSlot] ?? ids[0]) : ids[0];
+                                    return (
+                                        <div key={team.id} className={`relative flex flex-col gap-2 p-3 rounded-2xl border transition-all ${
+                                            isActive ? `bg-${team.color}-500/10 border-${team.color}-500/40 shadow-[0_0_20px_rgba(var(--${team.color}-500-rgb),0.1)]` : "bg-white/[0.02] border-white/5 opacity-40"
+                                        }`}>
+                                            <div className="flex items-center justify-between">
+                                                <span className={`text-[10px] font-black uppercase tracking-widest ${isActive ? `text-${team.color}-400` : "text-slate-500"}`}>
+                                                    {team.label}
+                                                </span>
+                                                {isActive && <span className={`w-1.5 h-1.5 rounded-full bg-${team.color}-400 animate-pulse`} />}
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="text-[10px] font-bold text-white truncate italic">{pid ? getPlayerName(pid) : "Offline"}</p>
+                                                {isActive && (
+                                                    <p className={`text-[8px] font-black uppercase tracking-widest mt-1 text-${team.color}-600`}>
+                                                        S{servingSlot + 1} · {servingSide === "right" ? "Even (R)" : "Odd (L)"}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
                         </div>
                     )}
-                </div>
+                </section>
 
-                {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+                {/* Engagement Controls */}
+                <section className="flex flex-col gap-3">
+                    {/* Rally Lost / Rollback Row */}
+                    <div className="grid grid-cols-2 gap-3">
+                        <button
+                            disabled={!matchIsLive}
+                            onClick={() => openLostServeModal()}
+                            className="group relative overflow-hidden bg-amber-500 text-black font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95 disabled:opacity-30 flex flex-col items-center justify-center gap-0.5 italic"
+                        >
+                            <span className="text-xs uppercase tracking-[0.2em] relative z-10">
+                                {match.sport === "pickleball" ? "Rally Lost" : "Side Out"}
+                            </span>
+                            <span className="text-[8px] font-black uppercase tracking-widest opacity-60 relative z-10">
+                                {isDoubles && servingSlot === 0 && !isFirstServiceSequence ? "→ Server 2" : "→ Side Out"}
+                            </span>
+                            <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
+                        </button>
 
-                {/* Set won — handled by global modal below */}
-
-                {/* Serve event toast (pickleball only) */}
-                {serveEvent && match?.sport === "pickleball" && (
-                    <div className={`rounded-xl border px-4 py-3 text-sm text-center space-y-1 ${
-                        serveEvent.type === "fault"
-                            ? serveEvent.isSideout
-                                ? "bg-red-500/10 border-red-500/30"
-                                : "bg-amber-500/10 border-amber-500/30"
-                            : "bg-blue-500/10 border-blue-500/30"
-                    }`}>
-                        {/* Fault line */}
-                        {serveEvent.type === "fault" && (
-                            <div className="font-bold text-red-400">
-                                ⚠️ Service Fault — {serveEvent.faulterName}
-                            </div>
-                        )}
-
-                        {/* What happens next */}
-                        {serveEvent.type === "fault" && !serveEvent.isSideout ? (
-                            // Partner serves — same team, no side-out
-                            <div className="font-semibold text-amber-300">
-                                🏓 Partner serves → <span className="text-white">{serveEvent.newPlayerName}</span>
-                                <span className="text-zinc-400"> ({serveEvent.newTeam})</span>
-                            </div>
-                        ) : (
-                            // Side-out — opponent team gets serve
-                            <div className={`font-semibold ${serveEvent.type === "fault" ? "text-zinc-300" : "text-blue-300"}`}>
-                                🔄 Side-out → <span className="text-white">{serveEvent.newTeam}</span>
-                                {match.match_format === "doubles" && (
-                                    <span className="text-zinc-400"> · {serveEvent.newPlayerName}</span>
-                                )} serves
-                            </div>
-                        )}
+                        <button
+                            disabled={!matchIsLive}
+                            onClick={() => submitUndo()}
+                            className="bg-zinc-900 border border-white/10 hover:bg-white hover:text-black text-white font-black py-4 rounded-2xl shadow-xl transition-all active:scale-95 disabled:opacity-30 flex flex-col items-center justify-center gap-0.5 italic"
+                        >
+                            <span className="text-xs uppercase tracking-[0.2em]">Rollback</span>
+                            <span className="text-[8px] font-black uppercase tracking-widest opacity-40">Undo Last Op</span>
+                        </button>
                     </div>
-                )}
 
-                {/* ── Quick Points Chips ── */}
-                {ruleset && !isCurrentSetOver && (
-                    <div className="flex flex-col gap-2">
-                        <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest px-1">
-                            Quick Points
-                            {match.sport === "pickleball" && (
-                                <span className="ml-1.5 normal-case text-zinc-600 tracking-normal font-normal">· serving team scores</span>
-                            )}
-                        </div>
-                        <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar px-1">
-                            {/* Pickleball: Serve Winner chip — auto-fills current server, no modal needed */}
-                            {match.sport === "pickleball" && (() => {
-                                const serverIds = getTeamPlayerIds(servingTeam);
-                                const currentServerId = serverIds[servingSlot] ?? serverIds[0];
-                                return (
+                    {/* Violation Console Button */}
+                    {ruleset && ruleset.violation_types.length > 0 && (
+                        <button
+                            disabled={!matchIsLive}
+                            onClick={() => {
+                                setViolCode("");
+                                setViolPlayer("");
+                                setViolAward("");
+                                setModal({ type: "violation" });
+                            }}
+                            className="w-full py-3 rounded-2xl border border-yellow-500/30 bg-yellow-500/5 text-yellow-400 font-black text-xs uppercase tracking-[0.25em] italic transition-all hover:bg-yellow-500/15 active:scale-[0.98] disabled:opacity-30"
+                        >
+                            Violation Console
+                        </button>
+                    )}
+                </section>
+
+                {/* Tactical Triggers (Quick Chips) */}
+                {ruleset && !isCurrentSetOver && matchIsLive && (
+                    <div className="space-y-6">
+                        {/* Quick Points Section */}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                                <p className="text-[9px] font-black tracking-[0.3em] text-slate-500 uppercase">Quick Score Triggers</p>
+                                <span className="text-[8px] font-black text-slate-700 uppercase italic">Serving Team Scores</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2.5 px-1">
+                                {/* Sport-Specific Winning Shots */}
+                                {(ruleset.scoring_causes ?? SCORING_CAUSES[match.sport] ?? []).map(cause => (
                                     <button
-                                        onClick={() => submitPoint(servingTeam, "winning_shot", { player_id: currentServerId, cause: "Serve winner" })}
-                                        className="whitespace-nowrap px-4 py-2.5 bg-amber-500/10 border border-amber-500/30 hover:border-amber-500/60 text-amber-400 rounded-xl text-xs font-black transition-all active:scale-95 shrink-0"
-                                    >
-                                        🏓 Serve Winner
-                                    </button>
-                                );
-                            })()}
-                            {/* Top 3 rally-winning shot types */}
-                            {(ruleset.scoring_causes ?? []).slice(0, 3).map(cause => (
-                                <button
-                                    key={cause}
-                                    onClick={() => {
-                                        const team = servingTeam;
-                                        const pIds = getTeamPlayerIds(team);
-                                        const pId  = pIds.length === 1 ? pIds[0] : undefined;
-                                        if (pId) {
-                                            submitPoint(team, "winning_shot", { player_id: pId, cause });
-                                        } else {
-                                            // Doubles: jump straight to player selection
-                                            setAttrCause(cause);
-                                            setModal({ type: "point_attribution", team, step: "winning_shot" });
-                                        }
-                                    }}
-                                    className="whitespace-nowrap px-4 py-2.5 bg-cyan-500/10 border border-cyan-500/30 hover:border-cyan-500/60 text-cyan-400 rounded-xl text-xs font-black transition-all active:scale-95 shrink-0"
-                                >
-                                    + {cause}
-                                </button>
-                            ))}
-                            {/* Top 3 receiving-team errors — SERVICE_FAULT excluded for pickleball (only serving team can fault on a serve) */}
-                            {(ruleset.error_types ?? [])
-                                .filter(e => match.sport !== "pickleball" || e.code !== "SERVICE_FAULT")
-                                .slice(0, 3)
-                                .map(err => (
-                                    <button
-                                        key={err.code}
+                                        key={cause}
                                         onClick={() => {
-                                            const beneficiary = servingTeam;
-                                            const faulterTeam = beneficiary === "team1" ? "team2" : "team1";
-                                            const fIds        = getTeamPlayerIds(faulterTeam);
-                                            const fId         = fIds.length === 1 ? fIds[0] : undefined;
-                                            if (fId) {
-                                                submitPoint(beneficiary, "opponent_error", { actor_player_id: fId, reason_code: err.code });
+                                            const team = servingTeam;
+                                            const pIds = getTeamPlayerIds(team);
+                                            const pId = pIds.length === 1 ? pIds[0] : (team === servingTeam ? (pIds[servingSlot] ?? pIds[0]) : pIds[0]);
+                                            if (pId) {
+                                                submitPoint(team, "winning_shot", { player_id: pId, cause });
                                             } else {
-                                                setErrorType(err.code);
-                                                setModal({ type: "point_attribution", team: beneficiary, step: "opponent_error" });
+                                                setAttrCause(cause);
+                                                setModal({ type: "point_attribution", team, step: "winning_shot" });
                                             }
                                         }}
-                                        className="whitespace-nowrap px-4 py-2.5 bg-red-500/10 border border-red-500/30 hover:border-red-500/60 text-red-400 rounded-xl text-xs font-black transition-all active:scale-95 shrink-0"
+                                        className="flex flex-col items-center justify-center py-3.5 px-2 bg-cyan-500/10 border border-cyan-500/20 hover:border-cyan-500/50 text-cyan-400 rounded-2xl transition-all active:scale-95 italic"
                                     >
-                                        ❌ {err.label}
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-center leading-tight">
+                                            {cause.replace(" winner", "")}
+                                        </span>
+                                        <span className="text-[7px] font-black uppercase tracking-[0.2em] text-cyan-500/50 mt-1">Winner</span>
                                     </button>
                                 ))}
-                        </div>
-                    </div>
-                )}
 
-                {/* Main action buttons — side-out scoring */}
-                <div className="flex flex-col gap-3 mt-1">
-                    {/* Serving team scores */}
-                    <button
-                        disabled={isCurrentSetOver}
-                        onClick={() => openPointModal(servingTeam)}
-                        className={`w-full font-black py-5 text-lg sm:text-xl rounded-3xl shadow-lg transition-all active:scale-95 touch-manipulation flex flex-col items-center gap-0.5 disabled:opacity-30 disabled:pointer-events-none ${
-                            servingTeam === "team1"
-                                ? "bg-cyan-500/20 border-2 border-cyan-500/40 hover:bg-cyan-500/30 text-cyan-300"
-                                : "bg-violet-500/20 border-2 border-violet-500/40 hover:bg-violet-500/30 text-violet-300"
-                        }`}
-                    >
-                        <span>✓ Point Won</span>
-                        <span className={`text-[10px] uppercase tracking-widest font-bold ${servingTeam === "team1" ? "text-cyan-600" : "text-violet-600"}`}>
-                            {servingTeam === "team1" ? "Team 1" : "Team 2"} is serving
-                        </span>
-                    </button>
-
-                    {/* Receiving team wins rally — serve rotation */}
-                    <div className="grid grid-cols-2 gap-3 max-[280px]:grid-cols-1">
-                        <button
-                            onClick={() => { setLostServeFaulter(""); setModal({ type: "lost_serve" }); }}
-                            className="bg-amber-500/15 border-2 border-amber-500/30 hover:bg-amber-500/25 text-amber-300 font-black py-4 text-sm rounded-2xl shadow-md transition-all active:scale-95 touch-manipulation"
-                        >
-                            {match.sport === "pickleball" ? "↺ Rally Lost" : "↺ Lost Serve"}
-                            <div className="text-[10px] font-bold text-amber-600 mt-0.5">
-                                {isDoubles && servingSlot === 0 && !isFirstServiceSequence
-                                    ? "→ Server 2, no point"
-                                    : "→ Side Out, no point"}
+                                {/* Pickleball Special: Serve Winner */}
+                                {match.sport === "pickleball" && (
+                                    <button
+                                        onClick={() => {
+                                            const team = servingTeam;
+                                            const pIds = getTeamPlayerIds(team);
+                                            const pId = pIds[servingSlot] ?? pIds[0];
+                                            submitPoint(team, "winning_shot", { player_id: pId, cause: "Serve winner" });
+                                        }}
+                                        className="flex flex-col items-center justify-center py-3.5 px-2 bg-emerald-500/10 border border-emerald-500/20 hover:border-emerald-500/50 text-emerald-400 rounded-2xl transition-all active:scale-95 italic"
+                                    >
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-center leading-tight">Serve Ops</span>
+                                        <span className="text-[7px] font-black uppercase tracking-[0.2em] text-emerald-500/50 mt-1">Ace / Return Fail</span>
+                                    </button>
+                                )}
                             </div>
-                        </button>
-                        <button
-                            onClick={() => submitUndo()}
-                            className="bg-zinc-800/80 border-2 border-white/5 hover:bg-zinc-700 text-zinc-400 font-black py-4 text-sm rounded-2xl shadow-md transition-all active:scale-95 touch-manipulation"
-                        >
-                            ↩ Undo
-                            <div className="text-[10px] font-bold text-zinc-600 mt-0.5">Last action</div>
-                        </button>
-                    </div>
-                </div>
+                        </div>
 
-                {/* Quick Violations */}
-                {ruleset && ruleset.violation_types.length > 0 && (
-                    <div className="mt-2">
-                        <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-2 px-1">Quick Violations</div>
-                        <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar px-1">
-                            {ruleset.violation_types.slice(0, 4).map(v => (
-                                <button
-                                    key={v.code}
-                                    onClick={() => {
-                                        setViolCode(v.code);
-                                        const tIds = getTeamPlayerIds(servingTeam); // often server commits fault
-                                        if (tIds.length === 1) setViolPlayer(tIds[0]);
-                                        setModal({ type: "violation" });
-                                    }}
-                                    className="whitespace-nowrap px-4 py-2 border border-yellow-500/40 text-yellow-500 hover:text-yellow-400 hover:bg-yellow-500/10 rounded-xl text-[11px] font-bold transition-all active:scale-95"
-                                >
-                                    ⚠️ {v.label}
-                                </button>
-                            ))}
+                        {/* Quick Violations Section */}
+                        <div className="space-y-3">
+                            <div className="flex items-center justify-between px-1">
+                                <p className="text-[9px] font-black tracking-[0.3em] text-slate-500 uppercase">Quick Penalties</p>
+                                <span className="text-[8px] font-black text-slate-700 uppercase italic">Choose Responsible Player</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2.5 px-1">
+                                {ruleset.violation_types.map(v => (
+                                    <button
+                                        key={v.code}
+                                        onClick={() => {
+                                            setViolCode(v.code);
+                                            setViolPlayer("");
+                                            setViolAward("");
+                                            setModal({ type: "violation" });
+                                        }}
+                                        className="flex flex-col items-center justify-center py-3.5 px-2 bg-rose-500/10 border border-rose-500/20 hover:border-rose-500/50 text-rose-400 rounded-2xl transition-all active:scale-95 italic"
+                                    >
+                                        <span className="text-[9px] font-black uppercase tracking-widest text-center leading-tight">
+                                            {v.label.replace(" (NVZ)", "").replace(" Fault", "")}
+                                        </span>
+                                        <span className="text-[7px] font-black uppercase tracking-[0.2em] text-rose-500/50 mt-1">Fault / Infraction</span>
+                                    </button>
+                                ))}
+                            </div>
                         </div>
                     </div>
                 )}
 
-                {/* Secondary actions */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
-                    <button
-                        onClick={() => setModal({ type: "violation" })}
-                        className="bg-yellow-500/5 border border-yellow-500/20 text-yellow-500 hover:bg-yellow-500/10 text-xs font-black py-3 rounded-xl transition-colors touch-manipulation"
-                    >
-                        ⚠️ Violation
-                    </button>
-                    <button
-                        onClick={() => { setLostServeFaulter(""); setModal({ type: "lost_serve" }); }}
-                        className="bg-amber-500/5 border border-amber-500/20 text-amber-500 hover:bg-amber-500/10 text-xs font-black py-3 rounded-xl transition-colors touch-manipulation"
-                    >
-                        {match.sport === "pickleball" ? "↺ Rally Lost" : "↺ Lost Serve"}
-                    </button>
-                    {(() => {
-                        const lastSet = sets.at(-1);
-                        const lastSetBlank = lastSet
-                            ? (lastSet.team1_score ?? lastSet.player1_score ?? 0) === 0 &&
-                              (lastSet.team2_score ?? lastSet.player2_score ?? 0) === 0
-                            : false;
-                        const atMaxSets = ruleset ? sets.length >= ruleset.max_sets : false;
-                        const canAddSet = !atMaxSets && !lastSetBlank;
-                        return (
-                            <button
-                                disabled={!canAddSet}
-                                onClick={() => {
-                                    if (!canAddSet) return;
-                                    const nextSet = (lastSet?.set_number ?? 0) + 1;
-                                    setActiveSet(nextSet);
-                                    const token = getAccessToken();
-                                    if (token) fetch(`/api/matches/${matchId}/sets/${nextSet}/score`, {
-                                        method: "PUT",
-                                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                                        body: JSON.stringify({ player1_score: 0, player2_score: 0 }),
-                                    });
-                                }}
-                                className={`col-span-2 sm:col-span-1 text-xs font-black py-3 rounded-xl transition-colors touch-manipulation border ${
-                                    canAddSet
-                                        ? "bg-white/5 border-white/10 text-zinc-500 hover:text-white"
-                                        : "bg-transparent border-zinc-900 text-zinc-800 cursor-not-allowed"
-                                }`}
-                            >
-                                + Set
-                            </button>
-                        );
-                    })()}
-                </div>
-
-                {/* End match */}
-                <button
-                    onClick={() => offlineQueue.length === 0 ? setShowEnd(true) : setError("Sync all pending actions before ending the match.")}
-                    className={`w-full border font-bold py-3 rounded-xl transition-colors ${
-                        offlineQueue.length > 0
-                            ? "border-zinc-700 text-zinc-600 cursor-not-allowed"
-                            : "border-red-500/30 text-red-400 hover:bg-red-500/10"
-                    }`}
-                >
-                    End Match
-                    {offlineQueue.length > 0 && (
-                        <span className="block text-xs font-normal opacity-60 mt-0.5">
-                            Sync {offlineQueue.length} pending action{offlineQueue.length !== 1 ? "s" : ""} first
-                        </span>
-                    )}
-                </button>
-
-                {/* History timeline — pending (unsynced) + server-confirmed */}
+                {/* Intelligence Overlay (Recent History) */}
                 {(offlineQueue.length > 0 || recentHistory.length > 0) && (
-                    <div className="bg-zinc-900 border border-white/10 rounded-2xl p-4">
-                        <div className="text-xs font-bold tracking-widest text-zinc-500 uppercase mb-3">Recent Actions</div>
-                        <div className="flex flex-col gap-2">
-                            {/* Pending (local, unsynced) actions */}
-                            {[...offlineQueue].reverse().map(action => {
-                                const p = action.payload as Record<string, unknown>;
-                                let desc = "Action pending sync";
-                                if (action.type === "point") {
-                                    const team = p.team === "team1" ? "Team 1" : "Team 2";
-                                    const at = p.attribution_type as string;
-                                    if (at === "winning_shot") desc = `Point → ${team} · ${p.cause || "Winning shot"}`;
-                                    else if (at === "opponent_error") desc = `Point → ${team} · ${String(p.reason_code ?? "Error").replace(/_/g, " ")}`;
-                                    else desc = `Point → ${team}` + (p.cause ? ` (${p.cause})` : "");
-                                } else if (action.type === "violation") {
-                                    desc = `Violation: ${p.violation_code ?? "recorded"}`;
-                                } else if (action.type === "complete") {
-                                    desc = "Match completion queued";
-                                } else if (action.type === "undo") {
-                                    desc = "Undo";
-                                }
-                                return (
-                                    <div key={action.qid} className="flex items-start gap-2.5 text-xs">
-                                        <span className="mt-0.5 shrink-0 w-2 h-2 rounded-full bg-orange-400 animate-pulse" />
-                                        <div className="flex-1 flex items-center gap-2">
-                                            <span className="text-orange-300">{desc}</span>
-                                            <span className="text-xs text-orange-500/70 border border-orange-500/30 rounded px-1 py-0.5 leading-none">unsynced</span>
-                                        </div>
+                    <section className="bg-[#0a111a]/60 backdrop-blur-md border border-white/5 rounded-[2rem] p-5 space-y-4 shadow-xl">
+                        <div className="flex items-center justify-between px-1">
+                            <p className="text-[9px] font-black tracking-[0.4em] text-slate-500 uppercase">Mission History</p>
+                            {offlineQueue.length > 0 && <span className="text-[8px] font-black text-amber-500 uppercase animate-pulse">Sync Pending</span>}
+                        </div>
+                        <div className="space-y-2.5 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                            {/* Unsynced Actions */}
+                            {[...offlineQueue].reverse().map(action => (
+                                <div key={action.qid} className="flex items-start gap-3 group animate-in fade-in slide-in-from-left-2">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mt-1.5 shrink-0 animate-pulse shadow-[0_0_8px_rgba(245,158,11,0.5)]" />
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-[11px] text-amber-200 font-bold uppercase italic tracking-tight truncate">
+                                            {action.type === "point" ? `Manual Point → ${action.localTeam === "team1" ? "Alpha" : "Bravo"}` : "Tactical Command"}
+                                        </p>
+                                        <p className="text-[8px] text-amber-500/60 font-black uppercase tracking-widest">Awaiting Remote Confirmation</p>
                                     </div>
-                                );
-                            })}
-                            {/* Server-confirmed actions */}
+                                </div>
+                            ))}
+                            {/* Confirmed History */}
                             {recentHistory.map((e, i) => (
-                                <div key={e.id} className={`flex items-start gap-2.5 text-xs ${i === 0 && offlineQueue.length === 0 ? "opacity-100" : "opacity-60"}`}>
-                                    <span className={`mt-0.5 shrink-0 w-2 h-2 rounded-full ${
-                                        e.event_type === "point"     ? (e.team === "team1" ? "bg-cyan-400" : "bg-violet-400") :
-                                        e.event_type === "violation" ? "bg-yellow-400" :
-                                        e.event_type === "undo"      ? "bg-zinc-500" : "bg-zinc-600"
+                                <div key={e.id} className={`flex items-start gap-3 group transition-opacity ${i === 0 && offlineQueue.length === 0 ? "opacity-100" : "opacity-40"}`}>
+                                    <div className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 shadow-sm ${
+                                        e.event_type === "point" ? (e.team === "team1" ? "bg-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.3)]" : "bg-violet-400 shadow-[0_0_8px_rgba(167,139,250,0.3)]") : "bg-slate-600"
                                     }`} />
-                                    <div className="flex-1">
-                                        <span className="text-zinc-300">{e.description}</span>
-                                        {e.team1_score !== null && e.team2_score !== null && (
-                                            <span className="ml-2 text-zinc-600">{e.team1_score}:{e.team2_score}</span>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-[11px] text-slate-200 font-bold uppercase italic tracking-tight truncate">{formatHistoryDescription(e)}</p>
+                                        {e.team1_score !== null && (
+                                            <p className="text-[8px] text-slate-500 font-black uppercase tracking-widest">Score Now · {e.team1_score}:{e.team2_score}</p>
                                         )}
                                     </div>
+                                    <span className="text-[8px] text-slate-600 font-black italic mt-1.5">
+                                        {new Date(e.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                    </span>
                                 </div>
                             ))}
                         </div>
-                    </div>
+                    </section>
                 )}
 
-                {/* Ruleset info */}
-                {ruleset && (
-                    <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-4 flex flex-col gap-3">
-                        <div className="text-xs font-bold tracking-widest text-zinc-600 uppercase">Rules</div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs text-zinc-500">
-                            <span>Points to win: <span className="text-zinc-300">{ptsToWin}</span></span>
-                            <span>Sets to win: <span className="text-zinc-300">{ruleset.sets_to_win}</span></span>
-                            <span>Win by: <span className="text-zinc-300">{ruleset.win_by}</span></span>
-                            {effectiveMax && <span>Max: <span className="text-zinc-300">{effectiveMax}</span></span>}
-                        </div>
-                        {/* Score limit picker — only for point-based sports */}
-                        {ruleset.points_per_set && (
-                            <div>
-                                <div className="text-[10px] font-bold text-zinc-600 uppercase tracking-widest mb-2">Score limit</div>
-                                <div className="flex gap-2 max-[280px]:flex-col">
-                                    {([11, 15, 21] as const).map(n => (
-                                        <button
-                                            key={n}
-                                            onClick={() => changeScoreLimit(n)}
-                                            className={`flex-1 py-2 rounded-xl text-xs font-black border transition-all ${
-                                                (scoreLimit ?? ruleset.points_per_set) === n
-                                                    ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
-                                                    : "bg-zinc-800/60 border-white/5 text-zinc-500 hover:border-white/10 hover:text-zinc-300"
-                                            }`}
-                                        >
-                                            {n}
-                                        </button>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
+                {/* Operational Parameters (Rules & Settings) */}
+                <section className="bg-zinc-900/40 border border-white/5 rounded-[2rem] p-6 space-y-5">
+                    <div className="flex items-center justify-between">
+                        <p className="text-[9px] font-black tracking-[0.4em] text-slate-600 uppercase">Tactical Parameters</p>
+                        <div className="h-px flex-1 bg-white/5 mx-4" />
                     </div>
-                )}
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                        {[
+                            { l: "Pts to Win", v: ptsToWin },
+                            { l: "Sets to Win", v: ruleset?.sets_to_win ?? 2 },
+                            { l: "Win by Margin", v: ruleset?.win_by ?? 2 },
+                            { l: "Max Threshold", v: effectiveMax ?? "None" }
+                        ].map(stat => (
+                            <div key={stat.l} className="space-y-0.5">
+                                <p className="text-[8px] font-black text-slate-600 uppercase tracking-widest">{stat.l}</p>
+                                <p className="text-sm font-black text-slate-300 italic">{stat.v}</p>
+                            </div>
+                        ))}
+                    </div>
+
+                    {ruleset?.points_per_set && (
+                        <div className="space-y-3 pt-2">
+                            <p className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Score Limit Override</p>
+                            <div className="flex gap-2">
+                                {([11, 15, 21] as const).map(n => (
+                                    <button
+                                        key={n}
+                                        onClick={() => changeScoreLimit(n)}
+                                        className={`flex-1 py-2 rounded-xl text-[10px] font-black border transition-all italic ${
+                                            (scoreLimit ?? ruleset.points_per_set) === n
+                                                ? "bg-cyan-500/10 border-cyan-500/40 text-cyan-400"
+                                                : "bg-white/5 border-white/5 text-slate-600 hover:text-white"
+                                        }`}
+                                    >
+                                        {n} PTS
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <button
+                        disabled={!matchIsLive || offlineQueue.length > 0}
+                        onClick={() => setShowEnd(true)}
+                        className={`w-full py-4 rounded-2xl border font-black text-xs uppercase tracking-[0.2em] transition-all italic ${
+                            !matchIsLive || offlineQueue.length > 0
+                                ? "border-white/5 text-slate-700 cursor-not-allowed"
+                                : "border-rose-500/30 text-rose-500 hover:bg-rose-500 hover:text-black shadow-xl"
+                        }`}
+                    >
+                        {offlineQueue.length > 0 ? "Sync Pending Data" : "Initialize Mission Completion"}
+                    </button>
+                </section>
             </main>
 
             {/* ── Lost serve / Side out modal ── */}
@@ -1855,25 +1964,27 @@ export default function RefereeConsolePage() {
                             )}
                         </div>
 
-                        {/* Optional: who faulted */}
-                        <div>
-                            <div className="text-xs text-zinc-500 mb-2">
-                                {match.sport === "pickleball" ? "Serving player who lost the rally?" : "Who faulted?"}
-                                <span className="text-zinc-700 ml-1">(optional)</span>
+                        {/* Who faulted — only shown for doubles (singles auto-resolved) */}
+                        {players.filter(p => p.team === servingTeam).length > 1 && (
+                            <div>
+                                <div className="text-xs text-zinc-500 mb-2">
+                                    {match.sport === "pickleball" ? "Serving player who lost the rally?" : "Who faulted?"}
+                                    <span className="text-zinc-700 ml-1">(optional)</span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
+                                    {players.filter(p => p.team === servingTeam).map(p => (
+                                        <button key={p.id}
+                                            onClick={() => setLostServeFaulter(lostServeFaulter === p.id ? "" : p.id)}
+                                            className={`text-xs py-2 px-3 rounded-lg border transition-colors ${
+                                                lostServeFaulter === p.id
+                                                    ? "border-amber-500 bg-amber-500/10 text-amber-300"
+                                                    : "border-white/10 text-zinc-400 hover:border-white/20"
+                                            }`}
+                                        >{pName(p.id)}</button>
+                                    ))}
+                                </div>
                             </div>
-                            <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
-                                {players.filter(p => p.team === servingTeam).map(p => (
-                                    <button key={p.id}
-                                        onClick={() => setLostServeFaulter(lostServeFaulter === p.id ? "" : p.id)}
-                                        className={`text-xs py-2 px-3 rounded-lg border transition-colors ${
-                                            lostServeFaulter === p.id
-                                                ? "border-amber-500 bg-amber-500/10 text-amber-300"
-                                                : "border-white/10 text-zinc-400 hover:border-white/20"
-                                        }`}
-                                    >{pName(p.id)}</button>
-                                ))}
-                            </div>
-                        </div>
+                        )}
 
                         <button
                             onClick={handleLostServe}
@@ -2084,61 +2195,66 @@ export default function RefereeConsolePage() {
                             );
                         })()}
 
-                        {/* Step 2b: Opponent error — error type + opponent player both required */}
+                        {/* Step 2b: Opponent error - choose error first, then responsible player */}
                         {modal.step === "opponent_error" && (() => {
                             const valid = !!errorType && !!errorPlayer;
-                            const missingType   = !errorType;
-                            const missingPlayer = !errorPlayer;
+                            const responsiblePlayers = players.filter(p => p.team !== modal.team);
                             return (
                                 <div className="flex flex-col gap-4">
-                                    <div>
-                                        <div className="text-xs mb-2">
-                                            <span className={missingType ? "text-red-400 font-semibold" : "text-zinc-500"}>
-                                                Error type {missingType ? "— required ✱" : ""}
-                                            </span>
+                                    {!errorType ? (
+                                        <div>
+                                            <div className="text-xs mb-2">
+                                                <span className="text-red-400 font-semibold">What error happened?</span>
+                                            </div>
+                                            <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
+                                                {availableErrorTypes().map(e => (
+                                                    <button key={e.code}
+                                                        onClick={() => { setErrorType(e.code); setErrorPlayer(""); }}
+                                                        className="text-xs text-left px-3 py-2 rounded-lg border border-white/10 text-zinc-300 hover:border-red-500/40 hover:bg-red-500/10 hover:text-red-200 transition-colors"
+                                                    >{e.label}</button>
+                                                ))}
+                                            </div>
                                         </div>
-                                        <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto">
-                                            {(ruleset?.error_types ?? [])
-                                                .filter(e => match.sport !== "pickleball" || e.code !== "SERVICE_FAULT")
-                                                .map(e => (
-                                                <button key={e.code}
-                                                    onClick={() => setErrorType(errorType === e.code ? "" : e.code)}
-                                                    className={`text-xs text-left px-3 py-2 rounded-lg border transition-colors ${
-                                                        errorType === e.code ? "border-red-500 bg-red-500/10 text-red-300" : "border-white/10 text-zinc-400 hover:border-white/20"
-                                                    }`}
-                                                >{e.label}</button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <div className="text-xs mb-2">
-                                            <span className={missingPlayer ? "text-red-400 font-semibold" : "text-zinc-500"}>
-                                                Opponent who committed the error {missingPlayer ? "— required ✱" : ""}
-                                            </span>
-                                        </div>
-                                        <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
-                                            {players.filter(p => p.team !== modal.team).map(p => (
-                                                <button key={p.id}
-                                                    onClick={() => setErrorPlayer(errorPlayer === p.id ? "" : p.id)}
-                                                    className={`text-xs py-2 px-3 rounded-lg border transition-colors ${
-                                                        errorPlayer === p.id ? "border-red-500 bg-red-500/10 text-red-300" : "border-white/10 text-zinc-400 hover:border-white/20"
-                                                    }`}
-                                                >{pName(p.id)}</button>
-                                            ))}
-                                        </div>
-                                    </div>
+                                    ) : (
+                                        <>
+                                            <div className="rounded-xl border border-red-500/20 bg-red-500/5 p-3">
+                                                <div className="text-[10px] font-black uppercase tracking-widest text-red-400">Selected Error</div>
+                                                <div className="mt-1 flex items-center justify-between gap-3">
+                                                    <p className="text-sm font-bold text-white">{selectedErrorLabel()}</p>
+                                                    <button onClick={() => { setErrorType(""); setErrorPlayer(""); }} className="text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-red-300">
+                                                        Change
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <div className="text-xs mb-2">
+                                                    <span className={!errorPlayer ? "text-red-400 font-semibold" : "text-zinc-500"}>
+                                                        Who committed it {!errorPlayer ? "- required" : ""}
+                                                    </span>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
+                                                    {responsiblePlayers.map(p => (
+                                                        <button key={p.id}
+                                                            onClick={() => setErrorPlayer(errorPlayer === p.id ? "" : p.id)}
+                                                            className={`text-xs py-2 px-3 rounded-lg border transition-colors ${
+                                                                errorPlayer === p.id ? "border-red-500 bg-red-500/10 text-red-300" : "border-white/10 text-zinc-400 hover:border-white/20"
+                                                            }`}
+                                                        >{pName(p.id)}</button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
                                     {!valid && (
                                         <p className="text-xs text-red-400 text-center">
-                                            {missingType && missingPlayer ? "Select the error type and opponent player." :
-                                             missingType ? "Select the type of error committed." :
-                                             "Select which opponent committed the error."}
+                                            {!errorType ? "Select the error first." : "Select the responsible player."}
                                         </p>
                                     )}
                                     <button
                                         disabled={!valid}
                                         onClick={() => submitPoint(modal.team, "opponent_error", { actor_player_id: errorPlayer, reason_code: errorType })}
                                         className="font-bold py-3 rounded-xl transition-all active:scale-95 bg-red-500/20 border border-red-500/40 text-red-300 disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >Confirm — Opponent Error</button>
+                                    >Confirm Opponent Error</button>
                                 </div>
                             );
                         })()}
@@ -2185,76 +2301,154 @@ export default function RefereeConsolePage() {
                                 className="text-zinc-500 hover:text-white text-lg">✕</button>
                         </div>
 
-                        <div>
-                            <div className="text-xs text-zinc-500 mb-2">Violating player</div>
-                            <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
-                                {players.map(p => (
-                                    <button
-                                        key={p.id}
-                                        onClick={() => setViolPlayer(violPlayer === p.id ? "" : p.id)}
-                                        className={`text-xs py-2 px-3 rounded-lg border transition-colors ${
-                                            violPlayer === p.id
-                                                ? "border-yellow-500 bg-yellow-500/10 text-yellow-300"
-                                                : "border-white/10 text-zinc-400 hover:border-white/20"
-                                        }`}
-                                    >
-                                        {pName(p.id)}
-                                        <span className="ml-1 text-zinc-600">{p.team === "team1" ? "T1" : "T2"}</span>
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
+                        {(() => {
+                            const violatorTeam = violPlayer ? playerTeam(violPlayer) : null;
+                            const resolvedAward = violPlayer ? inferredViolationAward(violPlayer) : "";
+                            const isServingTeamRallyLoss = Boolean(
+                                violPlayer && match.sport === "pickleball" && violatorTeam === servingTeam
+                            );
+                            const outcomeText = !violPlayer
+                                ? ""
+                                : isServingTeamRallyLoss
+                                    ? `Serving team rally loss: no point, ${isDoubles ? "serve rotates" : "serve changes"}.`
+                                    : resolvedAward
+                                        ? `Point will be awarded to ${teamLabel(resolvedAward)}.`
+                                        : "Violation will be recorded without an automatic point.";
 
-                        <div>
-                            <div className="text-xs text-zinc-500 mb-2">Violation type</div>
-                            <div className="flex flex-col gap-1.5 max-h-36 overflow-y-auto">
-                                {ruleset.violation_types.map(v => (
-                                    <button
-                                        key={v.code}
-                                        onClick={() => setViolCode(violCode === v.code ? "" : v.code)}
-                                        className={`text-xs text-left px-3 py-2 rounded-lg border transition-colors ${
-                                            violCode === v.code
-                                                ? "border-yellow-500 bg-yellow-500/10 text-yellow-300"
-                                                : "border-white/10 text-zinc-400 hover:border-white/20"
-                                        }`}
-                                    >
-                                        {v.label}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
+                            return (
+                                <>
+                                    {!violCode ? (
+                                        <div>
+                                            <div className="text-xs mb-2">
+                                                <span className="text-yellow-400 font-semibold">What violation happened?</span>
+                                            </div>
+                                            <div className="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
+                                                {ruleset.violation_types.map(v => (
+                                                    <button
+                                                        key={v.code}
+                                                        onClick={() => { setViolCode(v.code); setViolPlayer(""); setViolAward(""); }}
+                                                        className="text-xs text-left px-3 py-2 rounded-lg border border-white/10 text-zinc-300 hover:border-yellow-500/40 hover:bg-yellow-500/10 hover:text-yellow-200 transition-colors"
+                                                    >
+                                                        {v.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-3">
+                                                <div className="text-[10px] font-black uppercase tracking-widest text-yellow-400">Selected Violation</div>
+                                                <div className="mt-1 flex items-center justify-between gap-3">
+                                                    <p className="text-sm font-bold text-white">{selectedViolationLabel()}</p>
+                                                    <button
+                                                        onClick={() => { setViolCode(""); setViolPlayer(""); setViolAward(""); }}
+                                                        className="text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-yellow-300"
+                                                    >
+                                                        Change
+                                                    </button>
+                                                </div>
+                                            </div>
 
-                        <div>
-                            <div className="text-xs text-zinc-500 mb-2">Award point to (optional)</div>
-                            <div className="grid grid-cols-3 gap-2 max-[280px]:grid-cols-1">
-                                {(["team1", "team2", ""] as const).map(t => (
-                                    <button
-                                        key={t || "none"}
-                                        onClick={() => setViolAward(t)}
-                                        className={`text-xs py-2 px-2 rounded-lg border transition-colors ${
-                                            violAward === t
-                                                ? "border-yellow-500 bg-yellow-500/10 text-yellow-300"
-                                                : "border-white/10 text-zinc-400 hover:border-white/20"
-                                        }`}
-                                    >
-                                        {t === "team1" ? "Team 1" : t === "team2" ? "Team 2" : "None"}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
+                                            <div>
+                                                <div className="text-xs mb-2">
+                                                    <span className={!violPlayer ? "text-yellow-400 font-semibold" : "text-zinc-500"}>
+                                                        Who is responsible {!violPlayer ? "- required" : ""}
+                                                    </span>
+                                                </div>
+                                                <div className="grid grid-cols-2 gap-2 max-[280px]:grid-cols-1">
+                                                    {players.map(p => (
+                                                        <button
+                                                            key={p.id}
+                                                            onClick={() => { setViolPlayer(violPlayer === p.id ? "" : p.id); setViolAward(""); }}
+                                                            className={`text-xs py-2 px-3 rounded-lg border transition-colors ${
+                                                                violPlayer === p.id
+                                                                    ? "border-yellow-500 bg-yellow-500/10 text-yellow-300"
+                                                                    : "border-white/10 text-zinc-400 hover:border-white/20"
+                                                            }`}
+                                                        >
+                                                            {pName(p.id)}
+                                                            <span className="ml-1 text-zinc-600">{teamLabel(p.team)}</span>
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
 
-                        <button
-                            onClick={submitViolation}
-                            disabled={!violPlayer || !violCode}
-                            className="w-full bg-yellow-500/20 border border-yellow-500/40 text-yellow-300 font-bold py-3 rounded-xl transition-all active:scale-95 disabled:opacity-40"
-                        >
-                            Record Violation
-                        </button>
+                                            {violPlayer && (
+                                                <div className="rounded-xl border border-white/10 bg-zinc-800/60 px-3 py-2 text-xs text-zinc-400">
+                                                    {outcomeText}
+                                                </div>
+                                            )}
+                                        </>
+                                    )}
+
+                                    {(!violCode || !violPlayer) && (
+                                        <p className="text-xs text-yellow-300/80 text-center">
+                                            {!violCode ? "Select the violation first." : "Select the responsible player."}
+                                        </p>
+                                    )}
+
+                                    <button
+                                        onClick={submitViolation}
+                                        disabled={!violPlayer || !violCode}
+                                        className="w-full bg-yellow-500/20 border border-yellow-500/40 text-yellow-300 font-bold py-3 rounded-xl transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        Record Violation
+                                    </button>
+                                </>
+                            );
+                        })()}
                     </div>
                 </div>
             )}
 
             {/* ── End match modal ── */}
+            {showLeaveConfirm && (
+                <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center px-4">
+                    <div className="w-full max-w-sm rounded-3xl border border-rose-500/25 bg-zinc-950/95 p-6 shadow-2xl">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <p className="text-[10px] font-black uppercase tracking-[0.3em] text-rose-400">Invalidate Match</p>
+                                <h2 className="mt-2 text-lg font-black text-white">Leave referee station?</h2>
+                            </div>
+                            <button
+                                onClick={() => !leaveLoading && setShowLeaveConfirm(false)}
+                                className="text-zinc-500 hover:text-white transition-colors"
+                                aria-label="Close invalidate dialog"
+                            >
+                                x
+                            </button>
+                        </div>
+
+                        <p className="mt-3 text-sm text-zinc-400">
+                            This will invalidate the match for everyone and release the court if one is assigned.
+                        </p>
+
+                        {match.status === "pending_approval" && (
+                            <p className="mt-2 text-xs text-amber-300">
+                                This match is still waiting for club approval, but you can invalidate it now.
+                            </p>
+                        )}
+
+                        <div className="mt-6 grid grid-cols-2 gap-3">
+                            <button
+                                onClick={() => setShowLeaveConfirm(false)}
+                                disabled={leaveLoading}
+                                className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-zinc-300 hover:bg-white/5 transition-colors disabled:opacity-50"
+                            >
+                                Keep Match
+                            </button>
+                            <button
+                                onClick={handleLeaveMatch}
+                                disabled={leaveLoading}
+                                className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm font-black text-rose-300 hover:bg-rose-500/15 transition-colors disabled:opacity-50"
+                            >
+                                {leaveLoading ? "Invalidating..." : "Invalidate"}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {showEnd && (
                 <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center px-4">
                     <div className="bg-zinc-900 border border-white/10 rounded-2xl p-6 w-full max-w-sm flex flex-col gap-4 overflow-y-auto max-h-[90vh]">

@@ -5,6 +5,11 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --mobile-padding: 16px;
+  --card-gap: 12px;
+  --section-gap: 20px;
+  --radius-mobile: 16px;
+  --radius-large: 20px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -36,6 +41,15 @@ a, button, [role="button"] {
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
   }
 
   .animate-in {
@@ -95,4 +109,31 @@ a, button, [role="button"] {
     transform: scaleX(0);
     transform-origin: left;
   }
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(100%); }
+}
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.animate-scanline {
+  animation: scanline 8s linear infinite;
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 4s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
 }

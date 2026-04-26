@@ -14,7 +14,8 @@ const SPORTS = [
     { key: "table_tennis", label: "Table Tennis", emoji: "🏓", border: "bg-orange-500/10", bg: "bg-orange-500/10", text: "text-orange-400"},
 ];
 
-const PSGC = "https://psgc.cloud/api";
+const PSGC = "/api/psgc";
+type PSGCItem = { code: string; name: string };
 
 export default function ProfileSetupPage() {
     const router = useRouter();
@@ -24,19 +25,34 @@ export default function ProfileSetupPage() {
 
     const [selectedSports, setSelectedSports] = useState<string[]>([]);
 
-    const [regions, setRegions] = useState<any[]>([]);
-    const [provinces, setProvinces] = useState<any[]>([]);
-    const [cities, setCities] = useState<any[]>([]);
-    const [barangays, setBarangays] = useState<any[]>([]);
+    const [regions, setRegions] = useState<PSGCItem[]>([]);
+    const [provinces, setProvinces] = useState<PSGCItem[]>([]);
+    const [cities, setCities] = useState<PSGCItem[]>([]);
+    const [barangays, setBarangays] = useState<PSGCItem[]>([]);
     const [location, setLocation] = useState({
         region_code: "", province_code: "", city_mun_code: "", barangay_code: "",
     });
+    const [gender, setGender] = useState("");
+
+    async function fetchPsgcItems(path: string): Promise<PSGCItem[]> {
+        try {
+            const res = await fetch(`${PSGC}${path}`);
+            if (!res.ok) throw new Error("PSGC unavailable");
+            const data = await res.json();
+            return Array.isArray(data) ? data : [];
+        } catch {
+            setModal({
+                type: "error",
+                title: "Location Service Unavailable",
+                message: "Could not load Philippine location data. Please check your connection and try again.",
+            });
+            return [];
+        }
+    }
 
     useEffect(() => {
-        fetch(`${PSGC}/regions`)
-        .then(r => r.json())
-        .then(setRegions);
-    }, []);
+        void fetchPsgcItems("/regions").then(setRegions);
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     function handleModalClose() {
       if (modal?.type === "success") {
@@ -55,24 +71,21 @@ export default function ProfileSetupPage() {
         setLocation({ region_code: code, province_code: "", city_mun_code: "", barangay_code: "" });
         setProvinces([]); setCities([]); setBarangays([]);
         if (!code) return;
-        const res = await fetch(`${PSGC}/regions/${code}/provinces`);
-        setProvinces(await res.json());
+        setProvinces(await fetchPsgcItems(`/regions/${code}/provinces`));
     }
 
     async function handleProvinceChange(code: string) {
         setLocation(prev => ({...prev, province_code: code, city_mun_code: "", barangay_code: ""}));
         setCities([]); setBarangays([]);
         if (!code) return;
-        const res = await fetch(`${PSGC}/provinces/${code}/cities-municipalities`);
-        setCities(await res.json());
+        setCities(await fetchPsgcItems(`/provinces/${code}/cities-municipalities`));
     }
 
     async function handleCityChange(code: string) {
         setLocation(prev => ({...prev, city_mun_code: code, barangay_code: "" }));
         setBarangays([]);
         if (!code) return;
-        const res = await fetch(`${PSGC}/cities-municipalities/${code}/barangays`);
-        setBarangays(await res.json())
+        setBarangays(await fetchPsgcItems(`/cities-municipalities/${code}/barangays`))
     }
 
     async function handleSportsNext() {
@@ -121,11 +134,11 @@ export default function ProfileSetupPage() {
     }
 
     async function handleCompleteSetup() {
-        if (!location.region_code || !location.province_code || !location.city_mun_code || !location.barangay_code) {
+        if (!gender || !location.region_code || !location.province_code || !location.city_mun_code || !location.barangay_code) {
             setModal({
               type: "error",
-              title: "Incomplete Location",
-              message: "Please fill in all location fields before continuing.",
+              title: "Incomplete Profile",
+              message: "Please select your gender and fill in all location fields before continuing.",
             });
             return;
           }
@@ -143,7 +156,7 @@ export default function ProfileSetupPage() {
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${token}`,
               },
-              body: JSON.stringify({ ...location, profile_setup_complete: true }),
+              body: JSON.stringify({ ...location, gender, profile_setup_complete: true }),
             });
             if (isUnauthorized(res.status)) {
               clearAuthSession();
@@ -190,7 +203,7 @@ export default function ProfileSetupPage() {
           <Link href="/" className="flex justify-center">
             <Image src="/logo.png" alt="iSMS" width={160} height={56} className="h-14 w-auto" />
           </Link>
-          <p className="text-zinc-500 text-sm mt-2">Let's set up your profile</p>
+          <p className="text-zinc-500 text-sm mt-2">Let&apos;s set up your profile</p>
         </div>
 
         {/* Progress bar */}
@@ -249,10 +262,21 @@ export default function ProfileSetupPage() {
 
               <div className="flex flex-col gap-4 mb-6">
                 <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-semibold text-zinc-400 tracking-widest uppercase">Gender</label>
+                  <select value={gender} onChange={e => setGender(e.target.value)} className={selectClass}>
+                    <option value="">Select gender...</option>
+                    <option value="male">Male</option>
+                    <option value="female">Female</option>
+                    <option value="other">Other / Prefer not to say</option>
+                  </select>
+                  <p className="text-[10px] text-zinc-600">Mixed doubles matchmaking requires male or female because teams must be male + female.</p>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
                   <label className="text-xs font-semibold text-zinc-400 tracking-widest uppercase">Region</label>
                   <select value={location.region_code} onChange={e => handleRegionChange(e.target.value)} className={selectClass}>
                     <option value="">Select region...</option>
-                    {regions.map((r: any) => <option key={r.code} value={r.code}>{r.name}</option>)}
+                    {regions.map((r) => <option key={r.code} value={r.code}>{r.name}</option>)}
                   </select>
                 </div>
 
@@ -260,7 +284,7 @@ export default function ProfileSetupPage() {
                   <label className="text-xs font-semibold text-zinc-400 tracking-widest uppercase">Province</label>
                   <select value={location.province_code} onChange={e => handleProvinceChange(e.target.value)} disabled={!location.region_code} className={selectClass}>
                     <option value="">Select province...</option>
-                    {provinces.map((p: any) => <option key={p.code} value={p.code}>{p.name}</option>)}
+                    {provinces.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
                   </select>
                 </div>
 
@@ -268,7 +292,7 @@ export default function ProfileSetupPage() {
                   <label className="text-xs font-semibold text-zinc-400 tracking-widest uppercase">City / Municipality</label>
                   <select value={location.city_mun_code} onChange={e => handleCityChange(e.target.value)} disabled={!location.province_code} className={selectClass}>
                     <option value="">Select city/municipality...</option>
-                    {cities.map((c: any) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                    {cities.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
                   </select>
                 </div>
 
@@ -276,7 +300,7 @@ export default function ProfileSetupPage() {
                   <label className="text-xs font-semibold text-zinc-400 tracking-widest uppercase">Barangay</label>
                   <select value={location.barangay_code} onChange={e => setLocation(prev => ({ ...prev, barangay_code: e.target.value }))} disabled={!location.city_mun_code} className={selectClass}>
                     <option value="">Select barangay...</option>
-                    {barangays.map((b: any) => <option key={b.code} value={b.code}>{b.name}</option>)}
+                    {barangays.map((b) => <option key={b.code} value={b.code}>{b.name}</option>)}
                   </select>
                 </div>
               </div>

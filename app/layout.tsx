@@ -24,7 +24,7 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "ISMS – Intelligent Sports Management System",
+  title: "ISMS – Integrated Sports Management System",
   description: "Manage matches, players, tournaments, and clubs all in one place.",
 };
 

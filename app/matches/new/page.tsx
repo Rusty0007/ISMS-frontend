@@ -23,7 +23,6 @@ type MatchType = "friendly" | "book";
 
 interface PlayerResult {
     id: string;
-    username: string;
     first_name: string;
     last_name: string;
 }
@@ -318,10 +317,7 @@ export default function NewMatchPage() {
                             /* Selected state */
                             <div className="flex items-center justify-between bg-zinc-800 border border-cyan-500/30 rounded-lg px-4 py-3">
                                 <div>
-                                    <span className="text-sm font-bold text-cyan-400">@{selectedPlayer.username}</span>
-                                    <span className="text-xs text-zinc-500 ml-2">
-                                        {selectedPlayer.first_name} {selectedPlayer.last_name}
-                                    </span>
+                                    <span className="text-sm font-bold text-cyan-400">{selectedPlayer.first_name} {selectedPlayer.last_name}</span>
                                 </div>
                                 <button
                                     type="button"
@@ -338,7 +334,7 @@ export default function NewMatchPage() {
                                     type="text"
                                     value={searchQuery}
                                     onChange={e => setSearchQuery(e.target.value)}
-                                    placeholder="Search by username..."
+                                    placeholder="Search by name..."
                                     className={inputClass + " w-full"}
                                 />
                                 {searching && (
@@ -359,10 +355,7 @@ export default function NewMatchPage() {
                                                 className="w-full text-left px-4 py-3 hover:bg-zinc-700 transition-colors flex items-center justify-between"
                                             >
                                                 <div>
-                                                    <span className="text-sm font-semibold text-white">@{p.username}</span>
-                                                    <span className="text-xs text-zinc-500 ml-2">
-                                                        {p.first_name} {p.last_name}
-                                                    </span>
+                                                    <span className="text-sm font-semibold text-white">{p.first_name} {p.last_name}</span>
                                                 </div>
                                             </button>
                                         ))}

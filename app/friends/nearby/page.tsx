@@ -7,7 +7,6 @@ import NavBar from "@/components/NavBar";
 
 interface NearbyPlayer {
     id: string;
-    username: string;
     first_name: string;
     last_name: string;
     avatar_url: string | null;
@@ -94,14 +93,14 @@ export default function NearbyPage() {
                                 <div className="flex items-center gap-3">
                                     <div className="relative">
                                         <div className="w-10 h-10 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-bold text-zinc-400">
-                                            {p.username[0].toUpperCase()}
+                                            {p.first_name?.[0]?.toUpperCase()}
                                         </div>
                                         <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 rounded-full border border-zinc-900" />
                                     </div>
                                     <div>
-                                        <div className="text-sm font-semibold">@{p.username}</div>
+                                        <div className="text-sm font-semibold">{p.first_name} {p.last_name}</div>
                                         <div className="text-xs text-zinc-500">
-                                            {p.first_name} {p.last_name} · checked in {timeAgo(p.checked_in_at)}
+                                            checked in {timeAgo(p.checked_in_at)}
                                         </div>
                                     </div>
                                 </div>

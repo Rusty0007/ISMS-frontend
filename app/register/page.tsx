@@ -11,7 +11,6 @@ export default function RegisterPage() {
     const [form, setForm] = useState({
         email: "",
         password: "",
-        username: "",
         first_name: "",
         last_name: "",
     });
@@ -48,24 +47,6 @@ export default function RegisterPage() {
             setLoading(false);
         }
     }
-
-    // Shared glass input styles applied via inline onFocus/onBlur
-    const inputBase: React.CSSProperties = {
-        background: "rgba(255,255,255,0.07)",
-        border: "1px solid rgba(255,255,255,0.10)",
-    };
-    const inputFocus: React.CSSProperties = {
-        border: "1px solid rgba(6,182,212,0.6)",
-        background: "rgba(255,255,255,0.10)",
-        boxShadow: "0 0 0 3px rgba(6,182,212,0.12)",
-    };
-    const inputBlur: React.CSSProperties = {
-        border: "1px solid rgba(255,255,255,0.10)",
-        background: "rgba(255,255,255,0.07)",
-        boxShadow: "none",
-    };
-
-    const inputClass = "rounded-xl px-4 py-3 text-sm text-white placeholder-white/25 focus:outline-none transition-all duration-200 w-full";
 
     return (
         <div className="relative min-h-screen flex items-center justify-center p-4 overflow-hidden">
@@ -108,9 +89,9 @@ export default function RegisterPage() {
                     </Link>
                     
                     <div className="mt-12 relative">
-                        <h2 className="text-2xl font-black tracking-tight text-white mb-2 uppercase text-nowrap">Join the Elite</h2>
+                        <h2 className="text-2xl font-black tracking-tight text-white mb-2 uppercase text-nowrap">Join the Community</h2>
                         <p className="text-zinc-500 text-sm font-medium leading-relaxed max-w-[200px] mx-auto uppercase tracking-widest text-[10px]">
-                            Intelligent Sports<br />Management System
+                            Integrated Sports<br />Management System
                         </p>
                     </div>
                 </div>
@@ -156,25 +137,6 @@ export default function RegisterPage() {
                                     className="rounded-2xl px-5 py-3 text-sm text-white bg-white/5 border border-white/10 placeholder-white/10 focus:outline-none focus:border-cyan-500/50 focus:bg-white/[0.08] transition-all duration-300 w-full"
                                 />
                             </div>
-                        </div>
-
-                        {/* Username */}
-                        <div className="flex flex-col gap-2">
-                            <label className="text-[10px] font-black text-zinc-500 tracking-[0.2em] uppercase flex items-center gap-2">
-                                <svg className="w-3 h-3 text-cyan-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                Username
-                            </label>
-                            <input
-                                type="text"
-                                name="username"
-                                value={form.username}
-                                onChange={handleChange}
-                                required
-                                placeholder="ann123"
-                                className="rounded-2xl px-5 py-3 text-sm text-white bg-white/5 border border-white/10 placeholder-white/10 focus:outline-none focus:border-cyan-500/50 focus:bg-white/[0.08] transition-all duration-300 w-full"
-                            />
                         </div>
 
                         {/* Email */}

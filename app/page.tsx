@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 
@@ -9,7 +8,7 @@ const sports = [
     key:   "pickleball",
     label: "PICKLEBALL",
     icon:  "🏓",
-    img:   "/sports/pickleball.png",
+    img:   "/sports/pickleball.jpg.png",
     btn:   "Pickleball",
     glow:  "from-blue-600/20 to-transparent",
     border: "hover:border-blue-500/50",
@@ -18,7 +17,7 @@ const sports = [
     key:   "badminton",
     label: "BADMINTON",
     icon:  "🏸",
-    img:   "/sports/badminton.png",
+    img:   "/sports/badminton.jpg.png",
     btn:   "Badminton",
     glow:  "from-blue-400/20 to-transparent",
     border: "hover:border-blue-400/50",
@@ -27,7 +26,7 @@ const sports = [
     key:   "lawn_tennis",
     label: "LAWN TENNIS",
     icon:  "🎾",
-    img:   "/sports/lawn-tennis-new.png",
+    img:   "/sports/lawn-tennis.jpg.png",
     btn:   "Lawn Tennis",
     glow:  "from-emerald-600/20 to-transparent",
     border: "hover:border-emerald-500/50",
@@ -36,7 +35,7 @@ const sports = [
     key:   "table_tennis",
     label: "TABLE TENNIS",
     icon:  "🏓",
-    img:   "/sports/table-tennis-new.png",
+    img:   "/sports/table-tennis.jpg.png",
     btn:   "Table Tennis",
     glow:  "from-orange-600/20 to-transparent",
     border: "hover:border-orange-500/50",
@@ -44,8 +43,6 @@ const sports = [
 ];
 
 export default function Home() {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-
   return (
     <div className="min-h-screen bg-[#030711] text-zinc-100 font-sans selection:bg-blue-500/30 overflow-x-hidden">
       
@@ -115,7 +112,7 @@ export default function Home() {
             </h1>
 
             <p className="text-zinc-400 text-lg md:text-xl leading-relaxed max-w-xl mx-auto lg:mx-0">
-              The intelligent OS for sports management. AI matchmaking, verified referee oversight, 
+              The integrated OS for sports management. AI matchmaking, verified referee oversight, 
               and local leaderboards all in one unified ecosystem.
             </p>
 
@@ -154,7 +151,7 @@ export default function Home() {
             <div className="relative bg-zinc-900/50 border border-white/10 rounded-[3rem] overflow-hidden aspect-[4/5] sm:aspect-square lg:aspect-[4/5] shadow-2xl backdrop-blur-sm">
               <Image
                 src="/hero-athlete.jpg.png"
-                alt="iSMS Elite Performance"
+                alt="iSMS Performance"
                 fill
                 className="object-cover transition-transform duration-700 group-hover:scale-105"
                 priority
@@ -163,7 +160,7 @@ export default function Home() {
               
               <div className="absolute bottom-8 left-8 right-8 p-6 bg-white/5 backdrop-blur-md rounded-2xl border border-white/10">
                 <div className="flex justify-between items-center mb-4">
-                  <span className="text-xs font-black uppercase tracking-widest text-blue-400">Live Calibration</span>
+                  <span className="text-xs font-black uppercase tracking-widest text-blue-400">Live Performance</span>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Active</span>
                 </div>
                 <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden">
@@ -324,7 +321,7 @@ export default function Home() {
         <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-8">
           <div className="flex flex-col items-center md:items-start gap-3">
             <Image src="/logo.png" alt="iSMS" width={100} height={30} className="h-7 w-auto grayscale opacity-50" />
-            <p className="text-[10px] text-zinc-600 font-medium tracking-widest uppercase">Intelligent Sports Management System</p>
+            <p className="text-[10px] text-zinc-600 font-medium tracking-widest uppercase">Integrated Sports Management System</p>
           </div>
           <div className="flex gap-10 text-[10px] font-black uppercase tracking-widest text-zinc-500">
             <Link href="/privacy" className="hover:text-zinc-300 transition-colors">Privacy</Link>

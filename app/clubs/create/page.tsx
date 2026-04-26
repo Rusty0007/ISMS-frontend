@@ -21,7 +21,7 @@ const SPORTS = [
         label: "Pickleball",
         emoji: "🥒",
         tagline: "Community-driven · Social & intergenerational play",
-        surfaces: ["Acrylic", "Concrete", "Modular Tiles", "Asphalt"],
+        surfaces: ["Concrete", "Asphalt", "Hardwood", "Acrylic", "PVC Mat", "Modular Tiles"],
         facilityCues: ["Open-play rotation friendly", "Noise-aware scheduling", "Court sharing rules"],
     },
     {

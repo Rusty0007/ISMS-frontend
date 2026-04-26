@@ -4,7 +4,6 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { getAccessToken, clearAuthSession, isUnauthorized } from "@/lib/auth";
 import NavBar from "@/components/NavBar";
-import Link from "next/link";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -22,28 +21,29 @@ const FORMATS = [
 ];
 
 const GEO_LEVELS = [
-    { value: "barangay",   label: "Barangay",     icon: "🌴", color: "text-orange-300" },
-    { value: "city",       label: "City / Mun.",  icon: "🏙️", color: "text-blue-300" },
-    { value: "provincial", label: "Provincial",   icon: "🌿", color: "text-green-300" },
-    { value: "regional",   label: "Regional",     icon: "👑", color: "text-yellow-300" },
-    { value: "national",   label: "National",     icon: "🌐", color: "text-slate-300" },
+    { value: "barangay",   label: "Barangay",     icon: "🌴" },
+    { value: "city",       label: "City / Mun.",  icon: "🏙️" },
+    { value: "provincial", label: "Provincial",   icon: "🌿" },
+    { value: "regional",   label: "Regional",     icon: "👑" },
+    { value: "national",   label: "National",     icon: "🌐" },
 ];
 
 const NATIONAL_MIN_RATING  = 1900;
 const NATIONAL_MIN_MATCHES = 10;
 
-const TIER_CONFIG: Record<string, { color: string; bg: string; border: string }> = {
-    Beginner:     { color: "text-zinc-400",   bg: "bg-zinc-700/40",    border: "border-zinc-600/40" },
-    Intermediate: { color: "text-blue-300",   bg: "bg-blue-500/10",    border: "border-blue-500/20" },
-    Advanced:     { color: "text-violet-300", bg: "bg-violet-500/10",  border: "border-violet-500/20" },
-    Expert:       { color: "text-amber-300",  bg: "bg-amber-500/10",   border: "border-amber-500/20" },
-    Elite:        { color: "text-rose-300",   bg: "bg-rose-500/10",    border: "border-rose-500/20" },
+const TIER_CONFIG: Record<string, { color: string; bg: string; border: string; glow: string }> = {
+    Novice:              { color: "text-slate-400",   bg: "bg-slate-500/10",   border: "border-slate-500/20",   glow: "" },
+    "Advanced Beginner": { color: "text-cyan-400",    bg: "bg-cyan-500/10",    border: "border-cyan-500/20",    glow: "shadow-[0_0_8px_rgba(6,182,212,0.4)]" },
+    Competent:           { color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/20", glow: "shadow-[0_0_8px_rgba(16,185,129,0.35)]" },
+    Proficient:          { color: "text-amber-400",   bg: "bg-amber-500/10",   border: "border-amber-500/20",   glow: "shadow-[0_0_8px_rgba(245,158,11,0.35)]" },
+    Expert:              { color: "text-rose-400",    bg: "bg-rose-500/10",    border: "border-rose-500/20",    glow: "shadow-[0_0_8px_rgba(244,63,94,0.35)]" },
+    Unranked:            { color: "text-zinc-400",    bg: "bg-zinc-500/10",    border: "border-zinc-500/20",    glow: "" },
 };
 
 const RANK_STYLES: Record<number, string> = {
-    1: "bg-yellow-500 text-black font-bold",
-    2: "bg-zinc-300 text-black font-bold",
-    3: "bg-amber-700 text-white font-bold",
+    1: "bg-gradient-to-br from-yellow-400 to-amber-600 text-black font-black",
+    2: "bg-gradient-to-br from-slate-300 to-slate-500 text-black font-black",
+    3: "bg-gradient-to-br from-amber-600 to-amber-800 text-white font-black",
 };
 
 // ── PH Region Names ───────────────────────────────────────────────────────────
@@ -97,7 +97,6 @@ function rankTitle(rank: number, geoLevel: string): string {
 interface LeaderboardEntry {
     rank:               number;
     user_id:            string;
-    username:           string;
     first_name:         string | null;
     last_name:          string | null;
     rating:             number;
@@ -125,6 +124,14 @@ interface MyRanking {
     skill_tier:         string;
     current_win_streak: number;
     rank:               number;
+}
+
+// ── Components ────────────────────────────────────────────────────────────────
+
+function HUDCorner({ className = "" }: { className?: string }) {
+    return (
+        <div className={`absolute w-2 h-2 border-t border-l border-cyan-500/30 ${className}`} />
+    );
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -207,120 +214,135 @@ export default function LeaderboardPage() {
     const rest = entries.slice(3);
 
     return (
-        <div className="min-h-screen bg-zinc-950 text-white selection:bg-blue-500/30">
+        <div className="min-h-screen bg-[#050b14] text-white selection:bg-cyan-500/30">
             {/* Background effects */}
             <div className="fixed inset-0 pointer-events-none overflow-hidden">
-                <div
-                    className="absolute inset-0 opacity-[0.03]"
-                    style={{
-                        backgroundImage: `
-                            linear-gradient(rgba(59,130,246,0.5) 1px, transparent 1px),
-                            linear-gradient(90deg, rgba(59,130,246,0.5) 1px, transparent 1px)
-                        `,
-                        backgroundSize: "40px 40px",
-                    }}
-                />
-                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-600/10 blur-[120px] rounded-full" />
-                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-600/10 blur-[120px] rounded-full" />
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(16,36,60,0.4)_0%,transparent_50%)]" />
+                <div className="absolute inset-0 opacity-[0.03]" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)", backgroundSize: "40px 40px" }} />
+                <div className="absolute inset-0 animate-scanline pointer-events-none opacity-[0.01] bg-[linear-gradient(transparent,rgba(255,255,255,0.5),transparent)] h-20" />
             </div>
 
             <NavBar />
             
-            <main className="relative z-10 max-w-5xl mx-auto px-6 py-10">
+            <main className="relative z-10 max-w-[1400px] mx-auto px-4 py-8 pb-32 pt-24">
 
-                {/* Back + Header */}
-                <div className="mb-10">
-                    <Link href="/dashboard" className="inline-flex items-center gap-2 text-xs font-black uppercase tracking-widest text-zinc-500 hover:text-white transition-colors group mb-4">
-                        <span className="group-hover:-translate-x-1 transition-transform">←</span> Dashboard
-                    </Link>
-                    <h1 className="text-5xl font-black tracking-tight">Leaderboard</h1>
-                    <p className="text-zinc-500 font-medium mt-2">
-                        Location-based rankings • earn your title • dominate the court
-                    </p>
+                {/* Tactical Hero Section */}
+                <div className="relative mb-12 p-8 lg:p-12 rounded-[2.5rem] border border-white/5 bg-[#0a111a]/80 backdrop-blur-xl shadow-2xl overflow-hidden">
+                    <HUDCorner className="top-6 left-6" />
+                    <HUDCorner className="top-6 right-6 rotate-90" />
+                    <HUDCorner className="bottom-6 left-6 -rotate-90" />
+                    <HUDCorner className="bottom-6 right-6 rotate-180" />
+                    
+                    <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-8">
+                        <div className="text-center md:text-left space-y-4">
+                            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-cyan-500/20 bg-cyan-500/10 text-[10px] font-black uppercase tracking-widest text-cyan-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                                Global Network
+                            </div>
+                            <h1 className="text-4xl lg:text-5xl font-black tracking-tight text-white uppercase italic">
+                                Strategic <span className="text-transparent bg-clip-text bg-gradient-to-r from-white via-cyan-100 to-cyan-400">Rankings</span>
+                            </h1>
+                            <p className="text-slate-400 text-xs font-medium uppercase tracking-[0.2em] max-w-md mx-auto md:mx-0">
+                                Location-based combat data • earn your title • dominate the sector
+                            </p>
+                        </div>
+
+                        {myRank !== null && (
+                            <div className="bg-cyan-500/5 border border-cyan-500/20 p-6 rounded-[2rem] text-center min-w-[200px] backdrop-blur-sm relative group overflow-hidden">
+                                <div className="absolute inset-0 bg-cyan-500/[0.02] group-hover:bg-cyan-500/[0.05] transition-colors" />
+                                <span className="text-[10px] font-black text-cyan-500 uppercase tracking-[0.3em] block mb-2">Your Current Rank</span>
+                                <div className="text-3xl font-black text-white italic tracking-tighter">
+                                    <span className="text-cyan-400 opacity-50 mr-1">#</span>{myRank}
+                                </div>
+                                <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest mt-1 block">{geoLevelLabel(geoLevel)}</span>
+                            </div>
+                        )}
+                    </div>
                 </div>
 
-                {/* My Titles — Premium Strip */}
-                {myRankings.filter(r => r.matches_played > 0).length > 0 && (
-                    <div className="mb-10">
-                        <h2 className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.3em] mb-4 flex items-center gap-3">
-                            <span className="w-8 h-px bg-zinc-800" />
-                            Your Ranking Titles
-                        </h2>
-                        <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
-                            {myRankings
-                                .filter(r => r.matches_played > 0)
-                                .map(r => {
-                                    const tier = TIER_CONFIG[r.skill_tier] ?? TIER_CONFIG["Beginner"];
-                                    const sportMeta = SPORTS.find(s => s.value === r.sport);
-                                    const active = r.sport === sport && r.match_format === matchFormat;
-                                    return (
-                                        <button
-                                            key={`${r.sport}-${r.match_format}`}
-                                            onClick={() => { setSport(r.sport); setMatchFormat(r.match_format); }}
-                                            className={`flex flex-col gap-3 p-4 rounded-2xl border transition-all text-left min-w-[160px] relative overflow-hidden group ${
-                                                active
-                                                    ? "border-blue-500/30 bg-blue-500/10 shadow-lg shadow-blue-500/5"
-                                                    : "border-white/5 bg-zinc-900/50 hover:bg-zinc-900 hover:border-white/10"
-                                            }`}
-                                        >
-                                            <div className="flex items-center justify-between relative z-10">
-                                                <span className="text-2xl group-hover:scale-110 transition-transform">{sportMeta?.icon}</span>
-                                                <span className="text-lg font-black text-white">#{r.rank}</span>
-                                            </div>
-                                            <div className="relative z-10">
-                                                <p className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">{sportMeta?.label} • {r.match_format}</p>
-                                                <div className="flex items-center gap-2 mt-2">
-                                                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded uppercase ${tier.bg} ${tier.color} border ${tier.border}`}>
-                                                        {r.skill_tier}
-                                                    </span>
-                                                    <span className="text-[10px] font-bold text-zinc-400">
-                                                        {r.rating.toFixed(0)} pts
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        </button>
-                                    );
-                                })}
-                        </div>
-                    </div>
-                )}
+                <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+                    
+                    {/* LEFT SIDEBAR: Filters & Personal */}
+                    <aside className="xl:col-span-1 space-y-8">
+                        
+                        {/* My Titles Card */}
+                        <section className="bg-[#0a111a]/60 backdrop-blur-md border border-white/5 rounded-[2rem] overflow-hidden">
+                            <div className="p-5 border-b border-white/5">
+                                <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Service Record</h3>
+                            </div>
+                            <div className="p-4 space-y-3">
+                                {myRankings.filter(r => r.matches_played > 0).length > 0 ? (
+                                    myRankings
+                                        .filter(r => r.matches_played > 0)
+                                        .map(r => {
+                                            const tier = TIER_CONFIG[r.skill_tier] ?? TIER_CONFIG["Novice"];
+                                            const sportMeta = SPORTS.find(s => s.value === r.sport);
+                                            const active = r.sport === sport && r.match_format === matchFormat;
+                                            return (
+                                                <button
+                                                    key={`${r.sport}-${r.match_format}`}
+                                                    onClick={() => { setSport(r.sport); setMatchFormat(r.match_format); }}
+                                                    className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all text-left group ${
+                                                        active
+                                                            ? "border-cyan-500/30 bg-cyan-500/10"
+                                                            : "border-transparent bg-white/5 hover:bg-white/10"
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        <span className="text-lg">{sportMeta?.icon}</span>
+                                                        <div>
+                                                            <p className="text-[9px] font-black text-white uppercase leading-none">{sportMeta?.label}</p>
+                                                            <p className="text-[8px] font-black text-slate-500 uppercase tracking-widest mt-1">{r.match_format}</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <p className="text-xs font-black text-white italic leading-none">#{r.rank}</p>
+                                                        <div className={`text-[7px] font-black px-1 py-0.5 rounded uppercase mt-1 ${tier.bg} ${tier.color}`}>
+                                                            {r.skill_tier}
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            );
+                                        })
+                                ) : (
+                                    <p className="text-[10px] text-slate-600 text-center py-4 font-black uppercase">No active records</p>
+                                )}
+                            </div>
+                        </section>
 
-                {/* Main Filter Section */}
-                <div className="bg-zinc-900/50 backdrop-blur-md border border-white/5 rounded-3xl p-8 mb-10">
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-                        {/* Left: Sport & Format */}
-                        <div className="flex flex-col gap-8">
+                        {/* Filters Card */}
+                        <section className="bg-[#0a111a]/60 backdrop-blur-md border border-white/5 rounded-[2rem] p-6 space-y-8">
                             <div>
-                                <label className="text-[10px] font-black tracking-[0.2em] text-zinc-500 uppercase mb-4 block">Select Sport</label>
-                                <div className="flex flex-wrap gap-2">
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 mb-4">Discipline</h4>
+                                <div className="grid grid-cols-1 gap-2">
                                     {SPORTS.map(s => (
                                         <button
                                             key={s.value}
                                             onClick={() => setSport(s.value)}
-                                            className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${
+                                            className={`flex items-center gap-3 px-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border ${
                                                 sport === s.value
-                                                    ? "bg-white text-black shadow-xl scale-105"
-                                                    : "bg-zinc-800/50 text-zinc-400 hover:text-white border border-white/5"
+                                                    ? "bg-white text-black border-white"
+                                                    : "bg-white/5 text-slate-400 border-transparent hover:bg-white/10 hover:text-slate-300"
                                             }`}
                                         >
                                             <span>{s.icon}</span>
-                                            <span>{s.label}</span>
+                                            {s.label}
                                         </button>
                                     ))}
                                 </div>
                             </div>
 
                             <div>
-                                <label className="text-[10px] font-black tracking-[0.2em] text-zinc-500 uppercase mb-4 block">Match Format</label>
-                                <div className="flex bg-zinc-800/50 p-1.5 rounded-2xl border border-white/5 w-fit">
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 mb-4">Engagement</h4>
+                                <div className="flex bg-white/5 p-1 rounded-xl border border-white/5">
                                     {FORMATS.map(f => (
                                         <button
                                             key={f.value}
                                             onClick={() => setMatchFormat(f.value)}
-                                            className={`px-6 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                                            className={`flex-1 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${
                                                 matchFormat === f.value
-                                                    ? "bg-zinc-700 text-white shadow-lg"
-                                                    : "text-zinc-500 hover:text-zinc-300"
+                                                    ? "bg-white/10 text-white shadow-lg"
+                                                    : "text-slate-500 hover:text-slate-300"
                                             }`}
                                         >
                                             {f.label}
@@ -328,108 +350,114 @@ export default function LeaderboardPage() {
                                     ))}
                                 </div>
                             </div>
-                        </div>
 
-                        {/* Right: Geo Level Selector */}
-                        <div>
-                            <label className="text-[10px] font-black tracking-[0.2em] text-zinc-500 uppercase mb-4 block text-center lg:text-left">Ranking Scope</label>
-                            <div className="flex gap-4 overflow-x-auto lg:justify-start justify-center pb-2 no-scrollbar">
-                                <GeoBadge level="barangay"   active={geoLevel === "barangay"}   onClick={() => setGeoLevel("barangay")} />
-                                <GeoBadge level="city"       active={geoLevel === "city"}       onClick={() => setGeoLevel("city")} />
-                                <GeoBadge level="provincial" active={geoLevel === "provincial"} onClick={() => setGeoLevel("provincial")} />
-                                <GeoBadge level="regional"   active={geoLevel === "regional"}   onClick={() => setGeoLevel("regional")} />
-                                <GeoBadge level="national"   active={geoLevel === "national"}   onClick={() => setGeoLevel("national")} />
+                            <div>
+                                <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500 mb-4">Ranking Scope</h4>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {GEO_LEVELS.map(g => (
+                                        <button
+                                            key={g.value}
+                                            onClick={() => setGeoLevel(g.value)}
+                                            className={`flex flex-col items-center justify-center p-3 rounded-xl border transition-all text-center gap-2 ${
+                                                geoLevel === g.value
+                                                    ? "bg-cyan-500/10 border-cyan-500/30 text-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.1)]"
+                                                    : "bg-white/5 border-transparent text-slate-500 hover:bg-white/10 hover:text-slate-300"
+                                            }`}
+                                        >
+                                            <span className="text-xl">{g.icon}</span>
+                                            <span className="text-[8px] font-black uppercase tracking-widest">{g.label}</span>
+                                        </button>
+                                    ))}
+                                </div>
                             </div>
-                        </div>
+                        </section>
+                    </aside>
+
+                    {/* CENTRAL CONTENT: Leaderboard & Podium */}
+                    <div className="xl:col-span-3 space-y-12">
+                        
+                        {/* PODIUM SECTION */}
+                        {!loading && entries.length > 0 && (
+                            <section className="relative py-12 px-8 bg-[#0a111a]/40 rounded-[3rem] border border-white/5 overflow-hidden">
+                                <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(6,182,212,0.05)_0%,transparent_70%)]" />
+                                
+                                <div className="flex flex-col items-center relative z-10">
+                                    <div className="flex items-end justify-center gap-4 lg:gap-12 w-full max-w-4xl pt-10">
+                                        {/* 2nd Place */}
+                                        {topThree[1] && <PodiumSlot entry={topThree[1]} rank={2}  />}
+                                        {/* 1st Place */}
+                                        {topThree[0] && <PodiumSlot entry={topThree[0]} rank={1}  />}
+                                        {/* 3rd Place */}
+                                        {topThree[2] && <PodiumSlot entry={topThree[2]} rank={3}  />}
+                                    </div>
+                                </div>
+                            </section>
+                        )}
+
+                        {/* LEADERBOARD LIST */}
+                        <section className="space-y-6">
+                            <div className="flex items-center justify-between px-2">
+                                <div className="flex items-center gap-4">
+                                    <h2 className="text-xs font-black uppercase tracking-[0.4em] text-slate-500 flex items-center gap-3">
+                                        <span className="text-xl">{GEO_LEVELS.find(g => g.value === geoLevel)?.icon}</span>
+                                        {geoLevelLabel(geoLevel)} Sector
+                                    </h2>
+                                    <div className="h-px w-24 bg-gradient-to-r from-white/10 to-transparent" />
+                                    <span className="text-[10px] font-black text-cyan-500 uppercase tracking-widest">
+                                        {total} Operators
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Eligibility Notice */}
+                            {geoLevel === "national" && (
+                                <div className="p-6 rounded-[2rem] bg-indigo-500/5 border border-indigo-500/10 backdrop-blur-sm flex items-start gap-4">
+                                    <span className="text-2xl">🌐</span>
+                                    <div>
+                                        <h3 className="text-[10px] font-black text-indigo-400 uppercase tracking-[0.2em] mb-1">Elite Eligibility Required</h3>
+                                        <p className="text-[10px] text-slate-500 font-black uppercase leading-relaxed tracking-widest opacity-80">
+                                            National status requires Glicko-2 rating <span className="text-white font-bold">≥ {NATIONAL_MIN_RATING}</span> and <span className="text-white font-bold">{NATIONAL_MIN_MATCHES} ranked matches</span>.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+
+                            {loading ? (
+                                <div className="flex flex-col items-center justify-center py-32 space-y-4">
+                                    <div className="w-12 h-12 border-2 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin" />
+                                    <p className="text-[10px] font-black text-cyan-500 uppercase tracking-[0.3em] animate-pulse">Syncing Leaderboard...</p>
+                                </div>
+                            ) : entries.length === 0 ? (
+                                <div className="bg-white/[0.02] border border-dashed border-white/10 rounded-[3rem] py-32 text-center">
+                                    <div className="text-6xl mb-6 opacity-20 grayscale">📊</div>
+                                    <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">No Combat Records Found</h3>
+                                    <p className="text-[10px] text-slate-600 font-black uppercase tracking-widest mt-2 max-w-xs mx-auto">Join active operations to establish your ranking in this sector.</p>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {rest.map(entry => (
+                                        <PlayerRow
+                                            key={entry.user_id}
+                                            entry={entry}
+                                            geoLevel={geoLevel}
+                                        />
+                                    ))}
+
+                                    {/* Load More */}
+                                    {entries.length < total && (
+                                        <button
+                                            onClick={loadMore}
+                                            disabled={loadingMore}
+                                            className="w-full mt-8 py-6 bg-[#0a111a]/40 hover:bg-[#0a111a]/60 border border-white/5 rounded-[2rem] text-[10px] font-black text-slate-500 hover:text-cyan-400 uppercase tracking-[0.4em] transition-all disabled:opacity-50"
+                                        >
+                                            {loadingMore ? "Syncing..." : `Retrieve Next Data Block (${total - entries.length} Remaining)`}
+                                        </button>
+                                    )}
+                                </div>
+                            )}
+                        </section>
                     </div>
                 </div>
-
-                {/* THE PODIUM (Top 3) */}
-                {!loading && entries.length > 0 && (
-                    <section className="mb-16">
-                        <div className="flex flex-col items-center justify-center pt-10 pb-20 relative">
-                            {/* Podium Background Glow */}
-                            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/0 to-zinc-950/0 pointer-events-none" />
-                            
-                            <div className="flex items-end justify-center gap-4 lg:gap-8 relative z-10 w-full max-w-3xl">
-                                {/* 2nd Place */}
-                                {topThree[1] && <PodiumSlot entry={topThree[1]} rank={2}  />}
-                                {/* 1st Place */}
-                                {topThree[0] && <PodiumSlot entry={topThree[0]} rank={1}  />}
-                                {/* 3rd Place */}
-                                {topThree[2] && <PodiumSlot entry={topThree[2]} rank={3}  />}
-                            </div>
-                        </div>
-                    </section>
-                )}
-
-                {/* Leaderboard list */}
-                <section className="relative">
-                    <div className="flex items-center justify-between mb-8">
-                        <div className="flex items-center gap-4">
-                            <h2 className="text-xl font-black tracking-tight flex items-center gap-3">
-                                <span className="text-2xl">{GEO_LEVELS.find(g => g.value === geoLevel)?.icon}</span>
-                                {geoLevelLabel(geoLevel)} Rankings
-                            </h2>
-                            <span className="bg-zinc-800 text-zinc-500 text-[10px] font-black px-3 py-1 rounded-full uppercase tracking-widest">
-                                {total} Players
-                            </span>
-                        </div>
-                        {myRank !== null && (
-                            <div className="bg-blue-500/10 border border-blue-500/20 px-4 py-2 rounded-2xl text-right">
-                                <span className="text-[9px] font-black text-blue-400 uppercase tracking-widest block">Your Rank</span>
-                                <span className="text-sm font-black text-white">{rankTitle(myRank, geoLevel)}</span>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* National eligibility notice */}
-                    {geoLevel === "national" && (
-                        <div className="mb-8 p-6 rounded-3xl bg-slate-900/50 border border-slate-700/30 backdrop-blur-sm flex items-start gap-4">
-                            <span className="text-2xl">🌐</span>
-                            <div>
-                                <h3 className="text-sm font-black text-slate-300 uppercase tracking-widest mb-1">National Eligibility</h3>
-                                <p className="text-xs text-slate-500 leading-relaxed max-w-2xl">
-                                    The national leaderboard is exclusive to elite competitors. Requires a Glicko-2 rating of <span className="text-white font-bold">≥ {NATIONAL_MIN_RATING}</span> and a minimum of <span className="text-white font-bold">{NATIONAL_MIN_MATCHES} ranked matches</span>.
-                                </p>
-                            </div>
-                        </div>
-                    )}
-
-                    {loading ? (
-                        <div className="flex flex-col items-center justify-center py-20 gap-4">
-                            <div className="w-10 h-10 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin" />
-                            <p className="text-xs font-black text-zinc-600 uppercase tracking-widest">Fetching Champions...</p>
-                        </div>
-                    ) : entries.length === 0 ? (
-                        <div className="bg-zinc-900/40 border border-white/5 rounded-3xl py-20 text-center">
-                            <div className="text-6xl mb-6 opacity-20">📊</div>
-                            <h3 className="text-lg font-black text-zinc-400 uppercase tracking-widest">No Rankings Found</h3>
-                            <p className="text-sm text-zinc-600 mt-2">Earn your spot by playing matches in this category.</p>
-                        </div>
-                    ) : (
-                        <div className="flex flex-col gap-3">
-                            {rest.map(entry => (
-                                <PlayerRow
-                                    key={entry.user_id}
-                                    entry={entry}
-                                    geoLevel={geoLevel}
-                                />
-                            ))}
-
-                            {/* Load more */}
-                            {entries.length < total && (
-                                <button
-                                    onClick={loadMore}
-                                    disabled={loadingMore}
-                                    className="w-full mt-6 py-4 bg-zinc-900/50 hover:bg-zinc-900 border border-white/5 rounded-2xl text-xs font-black text-zinc-500 hover:text-white uppercase tracking-[0.3em] transition-all disabled:opacity-50"
-                                >
-                                    {loadingMore ? "Synchronizing..." : `Show More (${total - entries.length} Remaining)`}
-                                </button>
-                            )}
-                        </div>
-                    )}
-                </section>
             </main>
         </div>
     );
@@ -438,159 +466,50 @@ export default function LeaderboardPage() {
 // ── Podium Slot ────────────────────────────────────────────────────────────────
 
 function PodiumSlot({ entry, rank }: { entry: LeaderboardEntry; rank: number }) {
-    const tier = TIER_CONFIG[entry.skill_tier] ?? TIER_CONFIG["Beginner"];
-    const initial = (entry.first_name?.[0] || entry.username?.[0] || "?").toUpperCase();
-    
+    const tier = TIER_CONFIG[entry.skill_tier] ?? TIER_CONFIG["Novice"];
+    const initial = (entry.first_name?.[0] || "?").toUpperCase();
+
     const rankConfig = {
-        1: { height: "h-48", color: "from-yellow-400 to-amber-600", text: "text-yellow-400", shadow: "shadow-yellow-500/20", icon: "🥇" },
-        2: { height: "h-36", color: "from-zinc-300 to-zinc-500",    text: "text-zinc-300",    shadow: "shadow-zinc-500/10",    icon: "🥈" },
-        3: { height: "h-28", color: "from-amber-600 to-amber-800", text: "text-amber-600",   shadow: "shadow-amber-900/10",   icon: "🥉" },
+        1: { height: "h-64", color: "from-yellow-400 to-amber-600", text: "text-yellow-400", glow: "shadow-yellow-500/20", icon: "🥇", accent: "bg-yellow-400" },
+        2: { height: "h-48", color: "from-slate-300 to-slate-500",    text: "text-slate-300",    glow: "shadow-slate-500/10",    icon: "🥈", accent: "bg-slate-300" },
+        3: { height: "h-40", color: "from-amber-600 to-amber-800", text: "text-amber-600",   glow: "shadow-amber-900/10",   icon: "🥉", accent: "bg-amber-700" },
     }[rank as 1|2|3];
 
     return (
-        <div className={`flex flex-col items-center gap-4 w-1/3 max-w-[180px] ${rank === 1 ? "order-2" : rank === 2 ? "order-1" : "order-3"}`}>
+        <div className={`flex flex-col items-center gap-6 w-full max-w-[200px] ${rank === 1 ? "order-2 z-20" : rank === 2 ? "order-1 z-10" : "order-3 z-10"}`}>
             {/* Player Avatar */}
             <div className="relative group">
-                <div className={`absolute inset-0 bg-gradient-to-br ${rankConfig.color} rounded-3xl blur-xl opacity-20 group-hover:opacity-40 transition-opacity`} />
-                <div className={`relative w-20 h-20 lg:w-24 lg:h-24 rounded-3xl border-2 border-white/10 bg-zinc-900 flex items-center justify-center text-3xl font-black ${entry.is_me ? "ring-2 ring-blue-500 ring-offset-4 ring-offset-zinc-950" : ""}`}>
-                    {initial}
-                    <div className="absolute -top-3 -right-3 w-8 h-8 rounded-full bg-zinc-900 border border-white/10 flex items-center justify-center text-lg shadow-lg">
+                <div className={`absolute inset-0 bg-gradient-to-br ${rankConfig.color} rounded-[2rem] blur-2xl opacity-10 group-hover:opacity-30 transition-opacity`} />
+                <div className={`relative w-24 h-24 lg:w-32 lg:h-32 rounded-[2.5rem] border-2 border-white/10 bg-[#0a111a] flex items-center justify-center text-4xl font-black shadow-2xl ${entry.is_me ? "ring-2 ring-cyan-500 ring-offset-4 ring-offset-[#050b14]" : ""}`}>
+                    <span className="text-transparent bg-clip-text bg-gradient-to-br from-white to-slate-500">{initial}</span>
+                    <div className="absolute -top-3 -right-3 w-10 h-10 rounded-2xl bg-[#0a111a] border border-white/10 flex items-center justify-center text-xl shadow-xl">
                         {rankConfig.icon}
                     </div>
                 </div>
             </div>
 
             {/* Info */}
-            <div className="text-center">
-                <p className="text-sm font-black text-white truncate max-w-[120px]">{entry.first_name || entry.username}</p>
-                <div className="flex items-center justify-center gap-1.5 mt-1">
-                    <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase border ${tier.bg} ${tier.color} ${tier.border}`}>
-                        {entry.skill_tier}
-                    </span>
+            <div className="text-center space-y-2">
+                <p className="text-[11px] font-black text-white uppercase italic tracking-tighter truncate max-w-[140px] group-hover:text-cyan-400 transition-colors">{`${entry.first_name || ''} ${entry.last_name || ''}`.trim() || entry.user_id.slice(0, 8)}</p>
+                <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest border ${tier.bg} ${tier.color} ${tier.border} ${tier.glow}`}>
+                    <span className={`w-1 h-1 rounded-full ${rankConfig.accent}`} />
+                    {entry.skill_tier}
                 </div>
             </div>
 
             {/* The Pedestal */}
-            <div className={`w-full ${rankConfig.height} bg-gradient-to-b ${rankConfig.color} rounded-t-3xl relative overflow-hidden flex flex-col items-center justify-start pt-6 border-t border-x border-white/20 ${rankConfig.shadow}`}>
-                <div className="absolute inset-0 bg-zinc-950/40 mix-blend-overlay" />
-                <span className="text-4xl font-black text-white/40 tabular-nums relative z-10">{entry.rating.toFixed(0)}</span>
-                <span className="text-[10px] font-black text-white/20 uppercase tracking-[0.2em] relative z-10 mt-1">Rating</span>
+            <div className={`w-full ${rankConfig.height} bg-gradient-to-b ${rankConfig.color} rounded-t-[2.5rem] relative overflow-hidden flex flex-col items-center justify-start pt-8 border-t border-x border-white/20 shadow-2xl`}>
+                <div className="absolute inset-0 bg-[#050b14]/60 mix-blend-overlay" />
+                <div className="relative z-10 flex flex-col items-center">
+                    <span className="text-3xl font-black text-white italic tabular-nums tracking-tighter">{entry.rating.toFixed(0)}</span>
+                    <span className="text-[8px] font-black text-white/30 uppercase tracking-[0.3em] mt-2">Tactical SR</span>
+                </div>
+                
+                {/* Decorative Elements */}
+                <div className="absolute bottom-0 left-0 right-0 h-1/2 bg-gradient-to-t from-black/40 to-transparent" />
+                <div className="absolute top-2 left-2 right-2 h-px bg-white/20" />
             </div>
         </div>
-    );
-}
-
-// ── Geo Badge ─────────────────────────────────────────────────────────────────
-
-const GEO_BADGE_CONFIG = {
-    national: {
-        label:        "National",
-        sublabel:     "All Regions",
-        icon:         "🌐",
-        outerBg:      "bg-gradient-to-b from-slate-600 to-slate-800",
-        innerBg:      "bg-gradient-to-b from-slate-700 to-slate-900",
-        bannerBg:     "bg-gradient-to-r from-slate-600 via-slate-500 to-slate-600",
-        border:       "border-slate-500",
-        activeBorder: "ring-2 ring-slate-400",
-        labelColor:   "text-slate-100",
-        subColor:     "text-slate-400",
-        crownColor:   "text-slate-400",
-    },
-    regional: {
-        label:        "Regional",
-        sublabel:     "Your Region",
-        icon:         "👑",
-        outerBg:      "bg-gradient-to-b from-yellow-500 to-yellow-700",
-        innerBg:      "bg-gradient-to-b from-amber-800 to-amber-950",
-        bannerBg:     "bg-gradient-to-r from-yellow-600 via-yellow-500 to-yellow-600",
-        border:       "border-yellow-500",
-        activeBorder: "ring-2 ring-yellow-400",
-        labelColor:   "text-yellow-100",
-        subColor:     "text-yellow-300",
-        crownColor:   "text-yellow-400",
-    },
-    provincial: {
-        label:        "Provincial",
-        sublabel:     "Your Province",
-        icon:         "🌿",
-        outerBg:      "bg-gradient-to-b from-green-500 to-green-800",
-        innerBg:      "bg-gradient-to-b from-green-800 to-green-950",
-        bannerBg:     "bg-gradient-to-r from-green-600 via-green-500 to-green-600",
-        border:       "border-green-500",
-        activeBorder: "ring-2 ring-green-400",
-        labelColor:   "text-green-100",
-        subColor:     "text-green-300",
-        crownColor:   "text-yellow-400",
-    },
-    city: {
-        label:        "City / Mun.",
-        sublabel:     "Your City",
-        icon:         "🏙️",
-        outerBg:      "bg-gradient-to-b from-blue-500 to-blue-800",
-        innerBg:      "bg-gradient-to-b from-blue-800 to-blue-950",
-        bannerBg:     "bg-gradient-to-r from-blue-600 via-blue-500 to-blue-600",
-        border:       "border-blue-500",
-        activeBorder: "ring-2 ring-blue-400",
-        labelColor:   "text-blue-100",
-        subColor:     "text-blue-300",
-        crownColor:   "text-blue-300",
-    },
-    barangay: {
-        label:        "Barangay",
-        sublabel:     "Your Barangay",
-        icon:         "🌴",
-        outerBg:      "bg-gradient-to-b from-orange-500 to-orange-800",
-        innerBg:      "bg-gradient-to-b from-orange-800 to-amber-950",
-        bannerBg:     "bg-gradient-to-r from-orange-600 via-amber-500 to-orange-600",
-        border:       "border-orange-500",
-        activeBorder: "ring-2 ring-orange-400",
-        labelColor:   "text-orange-100",
-        subColor:     "text-orange-300",
-        crownColor:   "text-yellow-400",
-    },
-} as const;
-
-function GeoBadge({
-    level,
-    active,
-    onClick,
-}: {
-    level: keyof typeof GEO_BADGE_CONFIG;
-    active: boolean;
-    onClick: () => void;
-}) {
-    const cfg = GEO_BADGE_CONFIG[level];
-
-    return (
-        <button
-            onClick={onClick}
-            className={`relative shrink-0 flex flex-col items-center gap-1 transition-all focus:outline-none ${
-                active ? "scale-105" : "opacity-70 hover:opacity-90"
-            }`}
-        >
-            <div
-                className={`relative w-20 rounded-t-xl rounded-b-[40%] overflow-hidden border-2 ${cfg.border} ${cfg.outerBg} ${active ? cfg.activeBorder : ""} shadow-lg`}
-                style={{ height: "88px" }}
-            >
-                <div className={`absolute inset-1 rounded-t-lg rounded-b-[35%] ${cfg.innerBg} flex flex-col items-center justify-between py-1.5`}>
-                    <span className={`text-base leading-none ${cfg.crownColor}`}>{cfg.icon}</span>
-                    <div className="text-center">
-                        <div className="text-[9px] font-black tracking-widest text-white/80 leading-none">ISMS</div>
-                    </div>
-                    <div className={`w-full ${cfg.bannerBg} py-0.5 px-1`}>
-                        <div className={`text-[8px] font-bold text-center tracking-wide leading-tight ${cfg.labelColor}`}>
-                            {cfg.label}
-                        </div>
-                    </div>
-                </div>
-                {active && (
-                    <div className="absolute inset-0 rounded-t-xl rounded-b-[40%] ring-inset ring-2 ring-white/20 pointer-events-none" />
-                )}
-            </div>
-            <span className={`text-[10px] font-medium transition-colors ${active ? "text-white" : "text-zinc-500"}`}>
-                {cfg.sublabel}
-            </span>
-        </button>
     );
 }
 
@@ -603,63 +522,61 @@ function PlayerRow({
     entry: LeaderboardEntry;
     geoLevel: string;
 }) {
-    const tier    = TIER_CONFIG[entry.skill_tier] ?? TIER_CONFIG["Beginner"];
+    const tier    = TIER_CONFIG[entry.skill_tier] ?? TIER_CONFIG["Novice"];
     const rankCls = RANK_STYLES[entry.rank];
-    const initial = (entry.first_name?.[0] || entry.username?.[0] || "?").toUpperCase();
-    const displayName = entry.first_name && entry.last_name
-        ? `${entry.first_name} ${entry.last_name}`
-        : entry.username;
+    const initial = (entry.first_name?.[0] || "?").toUpperCase();
+    const displayName = `${entry.first_name || ''} ${entry.last_name || ''}`.trim() || entry.user_id.slice(0, 8);
     const location = formatLocation(entry, geoLevel);
     const title = rankTitle(entry.rank, geoLevel);
 
     return (
-        <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl border transition-colors ${
+        <div className={`flex items-center gap-4 px-6 py-4 rounded-[2rem] border transition-all group ${
             entry.is_me
-                ? "bg-white/5 border-white/15"
-                : "bg-zinc-900 border-zinc-800 hover:border-zinc-700"
+                ? "bg-cyan-500/10 border-cyan-500/30 shadow-[0_0_20px_rgba(6,182,212,0.1)]"
+                : "bg-[#0a111a]/60 backdrop-blur-md border-white/5 hover:border-white/10 hover:-translate-x-1"
         }`}>
             {/* Rank badge */}
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs shrink-0 ${
-                rankCls ?? "bg-zinc-800 text-zinc-400 font-mono"
+            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center text-xs shrink-0 shadow-lg ${
+                rankCls ?? "bg-white/5 text-slate-500 font-black border border-white/5"
             }`}>
                 {entry.rank}
             </div>
 
             {/* Avatar */}
-            <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold shrink-0 ${
-                entry.is_me ? "bg-white text-black" : "bg-zinc-700 text-zinc-200"
+            <div className={`w-10 h-10 rounded-2xl flex items-center justify-center text-sm font-black shrink-0 border border-white/10 shadow-inner ${
+                entry.is_me ? "bg-white text-black" : "bg-zinc-800 text-slate-400"
             }`}>
                 {initial}
             </div>
 
             {/* Info */}
             <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold text-white truncate">
+                <div className="flex items-center gap-3 flex-wrap">
+                    <span className="text-xs font-black text-white uppercase italic tracking-tight truncate group-hover:text-cyan-400 transition-colors">
                         {displayName}
-                        {entry.is_me && <span className="ml-1 text-xs text-zinc-400">(you)</span>}
+                        {entry.is_me && <span className="ml-2 text-[9px] text-cyan-500/60 font-black uppercase tracking-widest">(Deployed Operator)</span>}
                     </span>
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded border ${tier.bg} ${tier.color} ${tier.border}`}>
+                    <div className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-widest border ${tier.bg} ${tier.color} ${tier.border}`}>
                         {entry.skill_tier}
-                    </span>
+                    </div>
                     {entry.current_win_streak >= 3 && (
-                        <span className="text-[10px] text-orange-400 font-semibold">
-                            🔥 {entry.current_win_streak}
-                        </span>
+                        <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-[8px] font-black text-orange-400 uppercase tracking-widest animate-pulse">
+                            🔥 {entry.current_win_streak} Streaking
+                        </div>
                     )}
                 </div>
-                <div className="text-xs text-zinc-500 mt-0.5 flex items-center gap-1 flex-wrap">
-                    <span className="text-zinc-400 font-medium">{title}</span>
-                    <span className="text-zinc-700">·</span>
-                    <span>{entry.wins}W {entry.losses}L</span>
-                    <span className="text-zinc-700">·</span>
-                    <span>{entry.win_rate_pct.toFixed(0)}% WR</span>
-                    <span className="text-zinc-700">·</span>
-                    <span>{entry.matches_played} matches</span>
+                <div className="text-[9px] font-black text-slate-600 uppercase tracking-widest mt-1.5 flex items-center gap-2 flex-wrap opacity-80 group-hover:opacity-100 transition-opacity">
+                    <span className="text-cyan-500/50">{title}</span>
+                    <span className="text-slate-800">•</span>
+                    <span className="text-slate-400">{entry.wins}W <span className="text-slate-800">/</span> {entry.losses}L</span>
+                    <span className="text-slate-800">•</span>
+                    <span className="text-slate-400">{entry.win_rate_pct.toFixed(0)}% Efficiency</span>
+                    <span className="text-slate-800">•</span>
+                    <span className="text-slate-400">{entry.matches_played} Operations</span>
                     {location && (
                         <>
-                            <span className="text-zinc-700">·</span>
-                            <span className="text-zinc-600">📍{location}</span>
+                            <span className="text-slate-800">•</span>
+                            <span className="text-slate-500 flex items-center gap-1">📍 {location}</span>
                         </>
                     )}
                 </div>
@@ -667,8 +584,8 @@ function PlayerRow({
 
             {/* Rating */}
             <div className="text-right shrink-0">
-                <div className="text-sm font-bold text-white">{entry.rating.toFixed(0)}</div>
-                <div className="text-[10px] text-zinc-600">±{entry.rating_deviation.toFixed(0)}</div>
+                <div className="text-lg font-black text-white italic tracking-tighter leading-none">{entry.rating.toFixed(0)}</div>
+                <div className="text-[8px] font-black text-slate-600 uppercase tracking-widest mt-1">±{entry.rating_deviation.toFixed(0)} SR</div>
             </div>
         </div>
     );

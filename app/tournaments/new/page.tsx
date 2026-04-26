@@ -1,10 +1,14 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { getAccessToken } from "@/lib/auth";
 import NavBar from "@/components/NavBar";
 import Link from "next/link";
+import {
+    TOURNAMENT_FORMAT_OPTIONS,
+    getTournamentFormatDescription,
+} from "@/lib/tournamentFormats";
 
 // ── Bracket size advisor ──────────────────────────────────────────────────────
 
@@ -35,7 +39,7 @@ function getBracketInfo(format: string, groupCount: number): BracketInfo {
         const counts = [4, 6, 8, 10, 12, 16, 20, 24, 32];
         return {
             idealCounts: counts,
-            description: "Any size works — even numbers keep every round balanced (no byes).",
+            description: "One group only. Everyone plays everyone. Even counts keep each round balanced.",
             byeWarning: (n) => n % 2 !== 0 ? "Odd count: one player gets a bye each round." : null,
             quickPick: (n) => {
                 const even = n % 2 === 0 ? n : n + 1;
@@ -65,7 +69,7 @@ function getBracketInfo(format: string, groupCount: number): BracketInfo {
         for (let ppg = 3; ppg <= 8; ppg++) counts.push(gc * ppg);
         return {
             idealCounts: counts,
-            description: `${gc} groups · each advancing 2 players → ${gc * 2}-team knockout bracket.`,
+            description: `${gc} pools first, then the top 2 from each pool advance to a ${gc * 2}-slot knockout bracket.`,
             byeWarning: (n) => {
                 if (counts.includes(n)) return null;
                 const ppg = n / gc;
@@ -91,7 +95,7 @@ function getBracketInfo(format: string, groupCount: number): BracketInfo {
         }
         return {
             idealCounts: validCounts,
-            description: "Equal-sized groups of 3, 4, or 5. Every team plays all others in their group. Priority: groups of 4.",
+            description: "Multiple equal-sized pools of 3, 4, or 5. Everyone plays within their pool, with no knockout stage.",
             byeWarning: (n) => {
                 for (const gs of [4, 5, 3]) {
                     if (n % gs === 0 && n / gs >= 2) return null;
@@ -141,14 +145,6 @@ const SPORTS = [
     { value: "lawn_tennis",  label: "Lawn Tennis" },
     { value: "table_tennis", label: "Table Tennis" },
 ];
-const FORMATS = [
-    { value: "single_elimination",   label: "Single Elimination" },
-    { value: "double_elimination",   label: "Double Elimination" },
-    { value: "round_robin",          label: "Round Robin" },
-    { value: "group_stage_knockout", label: "Group Stage + Knockout" },
-    { value: "swiss",                label: "Swiss" },
-    { value: "pool_play",            label: "Pool Play" },
-];
 const MATCH_FORMATS = [
     { value: "singles",       label: "Singles" },
     { value: "doubles",       label: "Doubles" },
@@ -159,6 +155,14 @@ const DRAW_METHODS = [
     { value: "seeded",       label: "Seeded Draw",        desc: "Top-rated players are seeded and separated." },
     { value: "smart_tiered", label: "Smart Tiered Draw",  desc: "AI-assisted grouping balanced by rating and club." },
 ];
+
+type ClubOption = {
+    id: string;
+    name: string;
+    sport: string | null;
+    description?: string | null;
+    court_count: number;
+};
 
 export default function NewTournamentPage() {
     const router = useRouter();
@@ -189,10 +193,51 @@ export default function NewTournamentPage() {
     const [separateLocs,    setSeparateLocs]    = useState(false);
     const [minRating,       setMinRating]       = useState("");
     const [maxRating,       setMaxRating]       = useState("");
-    const [requiresApproval, setRequiresApproval] = useState(false);
-    const [knockoutBestOf,  setKnockoutBestOf]  = useState<1 | 3>(3);
+    const [requiresApproval,  setRequiresApproval]  = useState(false);
+    const [knockoutBestOf,    setKnockoutBestOf]    = useState<1 | 3>(3);
+    const [groupStageBestOf,  setGroupStageBestOf]  = useState<1 | 3>(1);
+    const [venueMode,      setVenueMode]      = useState<"club" | "external" | "tbd">("club");
+    const [clubId,         setClubId]         = useState("");
+    const [venueName,      setVenueName]      = useState("");
+    const [venueAddress,   setVenueAddress]   = useState("");
+    const [clubs,          setClubs]          = useState<ClubOption[]>([]);
+    const [clubsLoading,   setClubsLoading]   = useState(false);
     const [submitting,      setSubmitting]      = useState(false);
     const [error,           setError]           = useState("");
+
+    useEffect(() => {
+        const token = getAccessToken();
+        if (!token) return;
+        let cancelled = false;
+        setClubsLoading(true);
+        fetch(`/api/clubs?sport=${encodeURIComponent(sport)}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+            .then(async res => res.ok ? res.json() : [])
+            .then(data => {
+                if (cancelled) return;
+                setClubs(Array.isArray(data) ? data : []);
+            })
+            .catch(() => {
+                if (cancelled) return;
+                setClubs([]);
+            })
+            .finally(() => {
+                if (cancelled) return;
+                setClubsLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [sport]);
+
+    useEffect(() => {
+        if (venueMode !== "club") return;
+        if (clubs.some(club => club.id === clubId)) return;
+        setClubId(clubs[0]?.id ?? "");
+    }, [clubs, clubId, venueMode]);
+
+    const selectedClub = clubs.find(club => club.id === clubId) ?? null;
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -202,6 +247,8 @@ export default function NewTournamentPage() {
 
         if (!name.trim()) { setError("Tournament name is required."); return; }
         if (!sport)        { setError("Sport is required."); return; }
+        if (venueMode === "club" && !clubId) { setError("Choose a club-hosted venue or switch the venue mode."); return; }
+        if (venueMode === "external" && !venueName.trim()) { setError("External venues need a venue name."); return; }
 
         setSubmitting(true);
         try {
@@ -214,6 +261,10 @@ export default function NewTournamentPage() {
                     sport,
                     format:           drawMethod === "smart_tiered" ? "group_stage_knockout" : format,
                     match_format:     matchFormat,
+                    venue_mode:       venueMode,
+                    club_id:          venueMode === "club" ? clubId : null,
+                    venue_name:       venueMode === "external" ? venueName.trim() : null,
+                    venue_address:    venueMode === "external" ? (venueAddress.trim() || null) : null,
                     max_participants: parseInt(maxParticipants) || 16,
                     starts_at:        startsAt || null,
                     ends_at:          endsAt   || null,
@@ -221,7 +272,8 @@ export default function NewTournamentPage() {
                     min_rating:         minRating ? parseFloat(minRating) : null,
                     max_rating:         maxRating ? parseFloat(maxRating) : null,
                     requires_approval:  requiresApproval,
-                    knockout_best_of:   knockoutBestOf,
+                    knockout_best_of:     knockoutBestOf,
+                    group_stage_best_of:  groupStageBestOf,
                     ...(drawMethod === "smart_tiered" ? {
                         group_count:        parseInt(groupCount) || 4,
                         balance_by_rating:  balanceRating,
@@ -311,10 +363,15 @@ export default function NewTournamentPage() {
                                 }}
                                 className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-zinc-500"
                             >
-                                {FORMATS.map(f => (
+                                {TOURNAMENT_FORMAT_OPTIONS.map(f => (
                                     <option key={f.value} value={f.value}>{f.label}</option>
                                 ))}
                             </select>
+                            <p className="mt-2 text-xs text-zinc-500">
+                                {drawMethod === "smart_tiered"
+                                    ? "Smart Tiered Draw uses Pool Play + Knockout with balanced groups."
+                                    : getTournamentFormatDescription(format)}
+                            </p>
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-zinc-300 mb-1.5">Match Format</label>
@@ -408,7 +465,7 @@ export default function NewTournamentPage() {
 
                                 <p className="text-xs text-zinc-500">
                                     Smart Tiered will generate {groupCount} balanced groups then run a knockout stage.
-                                    Tournament format is automatically set to Group Stage + Knockout.
+                                    Tournament format is automatically set to Pool Play + Knockout.
                                 </p>
                             </div>
                         )}
@@ -506,6 +563,121 @@ export default function NewTournamentPage() {
                         </div>
                     </div>
 
+                    <div className="bg-zinc-900/60 border border-zinc-700/50 rounded-xl p-4 space-y-4">
+                        <div>
+                            <p className="text-sm font-semibold text-zinc-300">Venue & Club Setup</p>
+                            <p className="text-xs text-zinc-500 mt-1">
+                                Choose a club now to unlock court automation later, or keep the venue flexible if it is not decided yet.
+                            </p>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2">
+                            {[
+                                {
+                                    value: "club",
+                                    label: "Club-hosted",
+                                    desc: "Use a club venue and its compatible courts for scheduling and auto-assignment.",
+                                },
+                                {
+                                    value: "external",
+                                    label: "External venue",
+                                    desc: "Track a named venue without linking club courts yet.",
+                                },
+                                {
+                                    value: "tbd",
+                                    label: "Venue TBD",
+                                    desc: "Create the tournament now and link a club later once the venue is confirmed.",
+                                },
+                            ].map(option => (
+                                <label
+                                    key={option.value}
+                                    className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                                        venueMode === option.value
+                                            ? "border-white/25 bg-white/5"
+                                            : "border-zinc-700 hover:border-zinc-600"
+                                    }`}
+                                >
+                                    <input
+                                        type="radio"
+                                        name="venueMode"
+                                        value={option.value}
+                                        checked={venueMode === option.value}
+                                        onChange={() => setVenueMode(option.value as "club" | "external" | "tbd")}
+                                        className="mt-0.5 accent-white"
+                                    />
+                                    <div>
+                                        <div className="text-sm font-medium text-white">{option.label}</div>
+                                        <div className="text-xs text-zinc-500 mt-0.5">{option.desc}</div>
+                                    </div>
+                                </label>
+                            ))}
+                        </div>
+
+                        {venueMode === "club" && (
+                            <div className="space-y-3">
+                                <div>
+                                    <label className="block text-xs text-zinc-400 mb-1">Select Club</label>
+                                    <select
+                                        value={clubId}
+                                        onChange={e => setClubId(e.target.value)}
+                                        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-500"
+                                    >
+                                        {clubsLoading && <option value="">Loading clubs...</option>}
+                                        {!clubsLoading && clubs.length === 0 && <option value="">No active clubs found for this sport</option>}
+                                        {clubs.map(club => (
+                                            <option key={club.id} value={club.id}>
+                                                {club.name} ({club.court_count} court{club.court_count === 1 ? "" : "s"})
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                {selectedClub ? (
+                                    <div className="rounded-xl border border-blue-500/20 bg-blue-500/8 px-4 py-3 text-sm text-zinc-300">
+                                        <div className="font-semibold text-white">{selectedClub.name}</div>
+                                        <div className="text-xs text-zinc-500 mt-1">
+                                            {selectedClub.court_count} compatible court{selectedClub.court_count === 1 ? "" : "s"} will be available to the tournament once the bracket is running.
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <div className="rounded-xl border border-amber-500/20 bg-amber-500/8 px-4 py-3 text-sm text-amber-300">
+                                        Pick a club to enable club-court assignment for this tournament.
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {venueMode === "external" && (
+                            <div className="grid grid-cols-1 gap-3">
+                                <div>
+                                    <label className="block text-xs text-zinc-400 mb-1">Venue Name</label>
+                                    <input
+                                        type="text"
+                                        value={venueName}
+                                        onChange={e => setVenueName(e.target.value)}
+                                        placeholder="e.g. City Sports Complex"
+                                        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs text-zinc-400 mb-1">Venue Address</label>
+                                    <input
+                                        type="text"
+                                        value={venueAddress}
+                                        onChange={e => setVenueAddress(e.target.value)}
+                                        placeholder="Optional address or landmark"
+                                        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-zinc-500"
+                                    />
+                                </div>
+                            </div>
+                        )}
+
+                        {venueMode === "tbd" && (
+                            <div className="rounded-xl border border-dashed border-zinc-700 bg-zinc-950/40 px-4 py-3 text-sm text-zinc-500">
+                                Court auto-assignment will stay locked until you later link a club venue on the tournament Manage page.
+                            </div>
+                        )}
+                    </div>
+
                     {/* Registration Settings */}
                     <div className="bg-zinc-900/60 border border-zinc-700/50 rounded-xl p-4 space-y-3">
                         <p className="text-sm font-semibold text-zinc-300">Registration Settings</p>
@@ -535,6 +707,35 @@ export default function NewTournamentPage() {
                                 />
                             </div>
                         </div>
+
+                        {/* Group Stage Best-of — for formats with round-robin/pool/group stages */}
+                        {["group_stage_knockout", "pool_play", "round_robin", "swiss"].includes(effectiveFormat) && (
+                            <div>
+                                <div className="text-sm text-zinc-300 mb-2">
+                                    {["group_stage_knockout", "pool_play"].includes(effectiveFormat) ? "Pool Match Format" : "Match Format"}
+                                </div>
+                                <p className="text-xs text-zinc-500 mb-3">How many games to win each {["group_stage_knockout", "pool_play"].includes(effectiveFormat) ? "pool " : ""}match?</p>
+                                <div className="flex gap-2">
+                                    {([1, 3] as const).map(bo => (
+                                        <button
+                                            key={bo}
+                                            type="button"
+                                            onClick={() => setGroupStageBestOf(bo)}
+                                            className={`flex-1 py-2.5 rounded-xl border text-sm font-semibold transition-all ${
+                                                groupStageBestOf === bo
+                                                    ? "bg-white text-black border-white"
+                                                    : "bg-zinc-800 text-zinc-400 border-zinc-700 hover:border-zinc-500"
+                                            }`}
+                                        >
+                                            {bo === 1 ? "Best of 1" : "Best of 3"}
+                                            <div className="text-[10px] font-normal mt-0.5 text-zinc-600">
+                                                {bo === 1 ? "Single game decides" : "Win 2 of 3 games"}
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
 
                         {/* Knockout Best-of (BO1 / BO3) — only for formats with a knockout stage */}
                         {["single_elimination", "double_elimination", "group_stage_knockout"].includes(effectiveFormat) && (

@@ -25,6 +25,16 @@ interface ToastItem {
     notif: Notification;
 }
 
+interface GlobalAnnouncement {
+    announcement_type: "new_club" | "new_tournament";
+    id: string;
+    name: string;
+    sport: string;
+    description: string;
+    post_id: string;
+    creator_name: string;
+}
+
 interface NavBarProps {
     backHref?: string;
     backLabel?: string;
@@ -130,15 +140,24 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
     const pathname = usePathname();
     const [notifications,  setNotifications]  = useState<Notification[]>([]);
     const [unreadCount,    setUnreadCount]     = useState(0);
+    const [feedUnreadCount, setFeedUnreadCount] = useState(() => {
+        if (typeof window !== "undefined") {
+            return parseInt(localStorage.getItem("feed_unread_count") ?? "0", 10) || 0;
+        }
+        return 0;
+    });
     const [dropdownOpen,   setDropdownOpen]    = useState(false);
     const [mobileMenuOpen, setMobileMenuOpen]  = useState(false);
     const [respondingId,   setRespondingId]    = useState<string | null>(null);
     const [toasts,         setToasts]          = useState<ToastItem[]>([]);
+    const [announcement,   setAnnouncement]    = useState<GlobalAnnouncement | null>(null);
+    const announcementTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const [firstName,      setFirstName]      = useState<string | null>(null);
     const [lastName,       setLastName]       = useState<string | null>(null);
     const [isAdmin,        setIsAdmin]        = useState(false);
     const [partyStatus,    setPartyStatus]    = useState<string | null>(null); // "forming"|"ready"|"in_queue"
+    const [missingPhone,   setMissingPhone]   = useState(false);
 
     const dropdownRef       = useRef<HTMLDivElement>(null);
     const profileRef        = useRef<HTMLDivElement>(null);
@@ -324,14 +343,14 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
 
     // Initial load + polling every 15s (reduced from 30s for faster alerts)
     useEffect(() => {
-        const storedFirst = sessionStorage.getItem("first_name");
-        const storedLast = sessionStorage.getItem("last_name");
-        
+        const storedFirst = localStorage.getItem("first_name");
+        const storedLast = localStorage.getItem("last_name");
+
         if (storedFirst && storedLast) {
             setFirstName(storedFirst);
             setLastName(storedLast);
         } else {
-            // Fallback: Fetch from profile if missing from storage (e.g. migration or hard refresh)
+            // Fallback: Fetch from profile if missing from storage (e.g. first visit or cleared storage)
             const token = getAccessToken();
             if (token) {
                 fetch("/api/players/me", { headers: { Authorization: `Bearer ${token}` } })
@@ -340,15 +359,34 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                         if (data?.profile) {
                             setFirstName(data.profile.first_name);
                             setLastName(data.profile.last_name);
-                            sessionStorage.setItem("first_name", data.profile.first_name || "");
-                            sessionStorage.setItem("last_name", data.profile.last_name || "");
+                            localStorage.setItem("first_name", data.profile.first_name || "");
+                            localStorage.setItem("last_name", data.profile.last_name || "");
                         }
                     }).catch(() => {});
             }
         }
 
-        const roles: string[] = JSON.parse(sessionStorage.getItem("roles") ?? "[]");
+        const roles: string[] = JSON.parse(localStorage.getItem("roles") ?? "[]");
         setIsAdmin(roles.includes("system_admin"));
+    }, []);
+
+    // Check once on mount whether the user has a phone number set
+    useEffect(() => {
+        const token = getAccessToken();
+        if (!token) return;
+        fetch("/api/players/me", { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (data?.profile) {
+                    setMissingPhone(!data.profile.phone_number);
+                }
+            })
+            .catch(() => {});
+
+        // Clear badge immediately when user saves their phone number
+        const handler = () => setMissingPhone(false);
+        window.addEventListener("phone_number_saved", handler);
+        return () => window.removeEventListener("phone_number_saved", handler);
     }, []);
 
     // Party status pill — poll every 10s so the pill appears/disappears without page reload
@@ -391,11 +429,23 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
 
             es.onmessage = (e) => {
                 try {
-                    const msg = JSON.parse(e.data) as { event?: string };
+                    const msg = JSON.parse(e.data) as { event?: string; count?: number };
                     if (msg.event === "new_notification") {
-                        // Optimistically bump the badge immediately, then sync from server
                         setUnreadCount(prev => prev + 1);
                         void fetchNotifications();
+                    } else if (msg.event === "feed_unread_count" && typeof msg.count === "number") {
+                        setFeedUnreadCount(msg.count);
+                        localStorage.setItem("feed_unread_count", String(msg.count));
+                        window.dispatchEvent(new CustomEvent("feed_unread_count", { detail: msg.count }));
+                    } else if (msg.event === "global_announcement") {
+                        const a = msg as unknown as GlobalAnnouncement & { event: string };
+                        setAnnouncement(a);
+                        setFeedUnreadCount(prev => prev + 1);
+                        localStorage.setItem("feed_unread_count", String(
+                            (parseInt(localStorage.getItem("feed_unread_count") ?? "0", 10) || 0) + 1
+                        ));
+                        if (announcementTimer.current) clearTimeout(announcementTimer.current);
+                        announcementTimer.current = setTimeout(() => setAnnouncement(null), 10000);
                     }
                 } catch { /* ignore malformed frames */ }
             };
@@ -561,6 +611,21 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
         }
 
         router.push("/dashboard");
+    }
+
+    async function handleLogout() {
+        const token = getAccessToken();
+        // Tell the backend to clear the Redis session key so the next login
+        // doesn't see a stale "active session". Fire-and-forget — always clear
+        // local state regardless of whether the API call succeeds.
+        if (token) {
+            fetch("/api/auth/logout", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+            }).catch(() => {});
+        }
+        clearAuthSession();
+        window.location.href = "/login";
     }
 
     function isActiveRoute(href: string) {
@@ -1164,8 +1229,15 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                                     {firstName} {lastName}
                                 </span>
                             </div>
-                            <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-xs font-black">
-                                {firstName?.[0].toUpperCase()}
+                            <div className="relative">
+                                <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 text-xs font-black">
+                                    {firstName?.[0].toUpperCase()}
+                                </div>
+                                {missingPhone && (
+                                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-red-500 border-2 border-[#050b14] flex items-center justify-center">
+                                        <span className="text-white text-[7px] font-black leading-none">!</span>
+                                    </span>
+                                )}
                             </div>
                         </button>
 
@@ -1173,7 +1245,12 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                             <div className="absolute right-0 top-full mt-2 w-48 rounded-2xl border border-white/10 bg-zinc-900 shadow-2xl overflow-hidden py-2">
                                 <Link href="/profile" onClick={() => setProfileOpen(false)} className="flex items-center gap-3 px-4 py-2 text-xs font-bold text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
                                     <span className="text-sm">👤</span>
-                                    Profile
+                                    <span className="flex-1">Profile</span>
+                                    {missingPhone && (
+                                        <span className="shrink-0 text-[8px] font-black px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400 border border-red-500/25 uppercase tracking-wide">
+                                            Add Phone
+                                        </span>
+                                    )}
                                 </Link>
                                 <Link href="/matches" onClick={() => setProfileOpen(false)} className="flex items-center gap-3 px-4 py-2 text-xs font-bold text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
                                     <span className="text-sm">🎾</span>
@@ -1181,13 +1258,7 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                                 </Link>
                                 <div className="h-px bg-white/5 my-1" />
                                 <button
-                                    onClick={() => {
-                                        setProfileOpen(false);
-                                        import("@/lib/auth").then(({ clearAuthSession }) => {
-                                            clearAuthSession();
-                                            window.location.href = "/login";
-                                        });
-                                    }}
+                                    onClick={() => { setProfileOpen(false); void handleLogout(); }}
                                     className="w-full flex items-center gap-3 px-4 py-2 text-xs font-bold text-red-400 hover:bg-red-500/10 transition-colors"
                                 >
                                     <span className="text-sm">🚪</span>
@@ -1245,6 +1316,10 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                                         <span className="text-lg">🟡</span>
                                         <span className="text-sm font-bold">Referee</span>
                                     </Link>
+                                    <Link href="/help" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/help") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
+                                        <span className="text-lg">❓</span>
+                                        <span className="text-sm font-bold">Help & FAQ</span>
+                                    </Link>
                                     <div className="h-px bg-white/5 my-2" />
                                     <Link href="/profile" onClick={() => setMobileMenuOpen(false)} className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${isActiveRoute("/profile") ? "bg-blue-600/10 text-blue-400" : "text-zinc-300 hover:bg-white/5"}`}>
                                         <span className="text-lg">👤</span>
@@ -1253,12 +1328,7 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                                     <button 
                                         onClick={() => {
                                             setMobileMenuOpen(false);
-                                            // Handle logout - we need to pass this or handle it here. 
-                                            // Since NavBar is a client component, we can probably import it.
-                                            import("@/lib/auth").then(({ clearAuthSession }) => {
-                                                clearAuthSession();
-                                                window.location.href = "/login";
-                                            });
+                                            void handleLogout();
                                         }} 
                                         className="flex items-center gap-3 px-4 py-3 rounded-xl text-red-400 hover:bg-red-500/10 transition-colors"
                                     >
@@ -1319,8 +1389,13 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                             <MobileNavIcon kind="leaderboard" className="w-5 h-5" />
                             <span className="text-center text-[8px] font-black uppercase tracking-widest leading-none">Social</span>
                         </Link>
-                        <Link href="/profile" className={`flex flex-col items-center gap-1.5 px-1 py-1 ${isActiveRoute("/profile") ? "text-cyan-400" : "text-slate-500"}`}>
-                            <MobileNavIcon kind="profile" className="w-5 h-5" />
+                        <Link href="/profile" className={`relative flex flex-col items-center gap-1.5 px-1 py-1 ${isActiveRoute("/profile") ? "text-cyan-400" : "text-slate-500"}`}>
+                            <div className="relative">
+                                <MobileNavIcon kind="profile" className="w-5 h-5" />
+                                {missingPhone && (
+                                    <span className="absolute -top-1 -right-1 w-3 h-3 rounded-full bg-red-500 border border-[#050b14]" />
+                                )}
+                            </div>
                             <span className="text-center text-[8px] font-black uppercase tracking-widest leading-none">User</span>
                         </Link>
                     </div>
@@ -1436,6 +1511,86 @@ export default function NavBar({ backHref, backLabel, title, navLinks, hideLogo 
                     );
                 })}
             </div>
+
+            {/* ── Global Announcement Modal ── */}
+            {announcement && (
+                <div className="fixed bottom-24 md:bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[calc(100vw-2rem)] max-w-sm pointer-events-auto">
+                    <div
+                        className="rounded-2xl border border-white/10 bg-[#0d1722]/95 backdrop-blur-xl shadow-[0_24px_60px_rgba(0,0,0,0.6)] overflow-hidden"
+                        style={{ animation: "slideUp 0.3s ease" }}
+                    >
+                        {/* colour strip */}
+                        <div className={`h-1 w-full ${announcement.announcement_type === "new_tournament" ? "bg-violet-500" : "bg-cyan-500"}`} />
+
+                        <div className="p-4">
+                            {/* header row */}
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-center gap-2.5">
+                                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-base shrink-0 ${announcement.announcement_type === "new_tournament" ? "bg-violet-500/15 text-violet-400" : "bg-cyan-500/15 text-cyan-400"}`}>
+                                        {announcement.announcement_type === "new_tournament" ? "🏆" : "🏟️"}
+                                    </div>
+                                    <div>
+                                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30">
+                                            {announcement.announcement_type === "new_tournament" ? "New Tournament" : "New Club"}
+                                        </p>
+                                        <p className="text-sm font-bold text-white leading-tight">{announcement.name}</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => { setAnnouncement(null); if (announcementTimer.current) clearTimeout(announcementTimer.current); }}
+                                    className="text-white/30 hover:text-white/70 transition-colors shrink-0 text-lg leading-none mt-0.5"
+                                >×</button>
+                            </div>
+
+                            {/* sport + creator */}
+                            <div className="mt-2 flex items-center gap-2">
+                                <span className="text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full bg-white/5 border border-white/8 text-white/40">
+                                    {announcement.sport}
+                                </span>
+                                <span className="text-[10px] text-white/25">by {announcement.creator_name}</span>
+                            </div>
+
+                            {/* description */}
+                            {announcement.description && (
+                                <p className="mt-2 text-xs text-white/40 leading-relaxed line-clamp-2">{announcement.description}</p>
+                            )}
+
+                            {/* CTA */}
+                            <Link
+                                href={announcement.announcement_type === "new_tournament" ? `/tournaments/${announcement.id}` : `/clubs/${announcement.id}`}
+                                onClick={() => { setAnnouncement(null); if (announcementTimer.current) clearTimeout(announcementTimer.current); }}
+                                className={`mt-3 flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${
+                                    announcement.announcement_type === "new_tournament"
+                                        ? "bg-violet-500/15 text-violet-300 hover:bg-violet-500/25 border border-violet-500/20"
+                                        : "bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25 border border-cyan-500/20"
+                                }`}
+                            >
+                                {announcement.announcement_type === "new_tournament" ? "View Tournament" : "View Club"}
+                                <span className="opacity-60">→</span>
+                            </Link>
+                        </div>
+
+                        {/* auto-dismiss progress bar */}
+                        <div className={`h-0.5 w-full ${announcement.announcement_type === "new_tournament" ? "bg-violet-500/30" : "bg-cyan-500/30"}`}>
+                            <div
+                                className={`h-full ${announcement.announcement_type === "new_tournament" ? "bg-violet-500" : "bg-cyan-500"}`}
+                                style={{ animation: "shrinkWidth 10s linear forwards" }}
+                            />
+                        </div>
+                    </div>
+
+                    <style>{`
+                        @keyframes slideUp {
+                            from { opacity: 0; transform: translateY(16px); }
+                            to   { opacity: 1; transform: translateY(0); }
+                        }
+                        @keyframes shrinkWidth {
+                            from { width: 100%; }
+                            to   { width: 0%; }
+                        }
+                    `}</style>
+                </div>
+            )}
         </>
     );
 }
